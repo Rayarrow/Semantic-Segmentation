@@ -4,12 +4,13 @@ FRONT_VGG16 = 'vgg16'
 FRONT_RES50 = 'res50'
 
 
-def get_front(front_name, image_height, image_width, image_channel, get_FCN=True):
+def get_front(front_name, image_height, image_width, image_channel, weight_decay=None, beta_decay=None,
+              gamma_decay=None, get_FCN=True):
     """
     Construct the feature-extraction layers. (layers before upsampling).
     """
     if front_name == FRONT_RES50:
-        return ResNet50(image_height, image_width, image_channel, get_FCN)
+        return ResNet50(image_height, image_width, image_channel, get_FCN, weight_decay, beta_decay, gamma_decay)
 
     elif front_name == FRONT_VGG16:
         return VGG16(image_height, image_width, image_channel, get_FCN)
@@ -103,8 +104,10 @@ class VGG16():
 
 
 class ResNet50():
-    def __init__(self, image_height, image_width, image_channel=3, get_FCN=False):
-        self.cc = component_constructor(res50_npy_path)
+    def __init__(self, image_height, image_width, image_channel=3, get_FCN=False, weight_decay=None, beta_decay=None,
+                 gamma_decay=None):
+        self.cc = component_constructor(res50_npy_path, weight_decay=weight_decay, beta_decay=beta_decay,
+                                        gamma_decay=gamma_decay)
         get_conv = self.cc.get_conv
         get_bn = self.cc.get_bn
         get_maxpooling = self.cc.get_maxpooling
@@ -141,7 +144,6 @@ class ResNet50():
             self.global_pooling = tf.reduce_mean(self.pool5, axis=[1, 2])
             self.fc1000 = get_fc('fc1000', self.global_pooling)
             self.y_pred = tf.argmax(self.fc1000, axis=-1, output_type=tf.int32, name='y_pred')
-            self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.fc1000)
 
 
 class FCN():
@@ -224,20 +226,20 @@ class FCN():
         else:
             raise Exception('`stride` can only take on values from {32, 16, 8}.')
 
-        self.y_pred = tf.argmax(self.upsample32x, axis=-1, output_type=tf.int32, name='y_pred')
-        self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.upsample32x,
-                                                                    weights=self.y_mask_input)
+        self.logits = self.upsample32x
+        self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
 
 
 class PSPNet():
     def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3,
-                 ignore=True, get_FCN=True):
+                 ignore=True, weight_decay=None, beta_decay=None, gamma_decay=None, get_FCN=True):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
-        self.front = get_front(front_name, image_height, image_width, image_channel, get_FCN)
+        self.front = get_front(front_name, image_height, image_width, image_channel, weight_decay, beta_decay,
+                               gamma_decay, get_FCN)
         self.X_input = self.front.X_input
 
         get_conv = self.front.cc.get_conv
@@ -249,7 +251,7 @@ class PSPNet():
 
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
         if ignore:
-            self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
+            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
         # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
         # ignored.
         else:
@@ -300,11 +302,9 @@ class PSPNet():
             self.post_dropout = tf.nn.dropout(self.post_bn, 0.9)
             self.reduce = get_conv('reduce', self.post_dropout, pretrained=False, bias=False, k_size=[1, 1],
                                    num_output=num_classes)
-            self.score = upsample('score', self.reduce, output_shape=(image_height, image_width))
+            self.logits = upsample('logits', self.reduce, output_shape=(image_height, image_width))
 
-        self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')
-        self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.score,
-                                                                    weights=self.y_mask_input)
+        self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
 
 
 class Deeplabv2():
@@ -349,11 +349,9 @@ class Deeplabv2():
             self.ASPP4 = get_conv('ASPP4', self.front.pool5, False, strides=1, k_size=(3, 3), atrous=24)
             self.EXP = self.ASPP1 + self.ASPP2 + self.ASPP3 + self.ASPP4
 
-        self.score = upsample('score', self.EXP, output_shape=self.input_shape[1:3])
+        self.logits = upsample('logits', self.EXP, output_shape=self.input_shape[1:3])
 
-        self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')
-        self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.score,
-                                                                    weights=self.y_mask_input)
+        self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
 
 
 class FPN():
@@ -416,5 +414,5 @@ class FPN():
         self.score = get_conv('score', self.upsample32x, pretrained=False, num_output=num_classes)
 
         self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')
-        self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.score,
-                                                                    weights=self.y_mask_input)
+
+

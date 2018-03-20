@@ -1,6 +1,7 @@
 import logging
 import sys
 import platform
+from os.path import join
 
 # Some platform-specified parameters are specified in this file.
 logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO, stream=sys.stdout)
@@ -29,4 +30,6 @@ elif platform.system() == 'Linux':
 else:
     raise Exception('npy and VOC path not specified.')
 
-
+VOC_image_home = join(VOC_home, 'JPEGImages')
+VOC_colormap_home = join(VOC_home, 'SegmentationClass')
+VOC_label_home = join(VOC_home, 'SegmentationClassLabelImages')

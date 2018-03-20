@@ -1,57 +1,38 @@
 import os
-from os.path import join
 
 import numpy as np
 from skimage import io
-
-from config import *
 from tqdm import tqdm
 
-VOC_palette = [[0, 0, 0],
-               [128, 0, 0],
-               [0, 128, 0],
-               [128, 128, 0],
-               [0, 0, 128],
-               [128, 0, 128],
-               [0, 128, 128],
-               [128, 128, 128],
-               [64, 0, 0],
-               [192, 0, 0],
-               [64, 128, 0],
-               [192, 128, 0],
-               [64, 0, 128],
-               [192, 0, 128],
-               [64, 128, 128],
-               [192, 128, 128],
-               [0, 64, 0],
-               [128, 64, 0],
-               [0, 192, 0],
-               [128, 192, 0],
-               [0, 64, 128],
-               [224, 224, 192]]
+from config import *
 
-VOC_labels = ['background',
-              'aero plane',
-              'bicycle',
-              'bird',
-              'boat',
-              'bottle',
-              'bus',
-              'car',
-              'cat',
-              'chair',
-              'cow',
-              'dining-table',
-              'dog',
-              'horse',
-              'motorbike',
-              'person',
-              'potted-plant',
-              'sheep',
-              'sofa',
-              'train',
-              'tv/monitor',
-              'void']
+colormap_label = [
+    [[0, 0, 0], 'background'],  # 0
+    [[128, 0, 0], 'aero plane'],  # 1
+    [[0, 128, 0], 'bicycle'],  # 2
+    [[128, 128, 0], 'bird'],  # 3
+    [[0, 0, 128], 'boat'],  # 4
+    [[128, 0, 128], 'bottle'],  # 5
+    [[0, 128, 128], 'bus'],  # 6
+    [[128, 128, 128], 'car'],  # 7
+    [[64, 0, 0], 'cat'],  # 8
+    [[192, 0, 0], 'chair'],  # 9
+    [[64, 128, 0], 'cow'],  # 10
+    [[192, 128, 0], 'dining-table'],  # 11
+    [[64, 0, 128], 'dog'],  # 12
+    [[192, 0, 128], 'horse'],  # 13
+    [[64, 128, 128], 'motorbike'],  # 14
+    [[192, 128, 128], 'person'],  # 15
+    [[0, 64, 0], 'potted-plant'],  # 16
+    [[128, 64, 0], 'sheep'],  # 17
+    [[0, 192, 0], 'sofa'],  # 18
+    [[128, 192, 0], 'train'],  # 19
+    [[0, 64, 128], 'tv/monitor'],  # 20
+    [[224, 224, 192], 'void'],  # 21
+]
+
+VOC_palette, VOC_label = zip(*colormap_label)
+VOC_labels = []
 
 minhou_palette = [[0, 0, 0],
                   [100, 160, 0],
@@ -65,14 +46,10 @@ minhou_palette = [[0, 0, 0],
                   [150, 220, 240],
                   [255, 255, 190]]
 
-VOC_data_home = r'G:\Documents\Exp Data\PASCAL VOC\VOCdevkit\VOC2012'
-VOC_colormap_home = join(VOC_data_home, 'SegmentationClass')
-VOC_label_home = join(VOC_data_home, 'SegmentationClassLabelImages')
-
 
 # This function converts from segmentation class colormap images to labeled images.
 def colormap_2_label(palette, colormap_home):
-    label_home = colormap_home + 'Labels'
+    label_home = colormap_home + 'LabelImages'
     if not os.path.exists(label_home):
         os.mkdir(label_home)
     colormap_images = list()
@@ -84,8 +61,6 @@ def colormap_2_label(palette, colormap_home):
 
     # Convert raw image to label image.
     for (each_colormap_image_name, each_colormap_image_file) in tqdm(colormap_images):
-        # if colormap_image_idx % 100 == 0:
-        #     logger.info('converting to label image {}/{}'.format(colormap_image_idx, len(colormap_images)))
         cur_label_image = np.zeros(each_colormap_image_file.shape[:2], dtype=np.int32)
         for i in range(each_colormap_image_file.shape[0]):
             for j in range(each_colormap_image_file.shape[1]):
@@ -107,5 +82,3 @@ def label_2_colormap(palette, labels):
         colormaps.append(this_colormap.astype(int))
 
     return colormaps
-
-

@@ -1,12 +1,15 @@
+import tensorflow as tf
 import os
 import re
 from os.path import join
+from collections import Iterable
 
 import numpy as np
 from skimage import io, transform
 
 from config import *
 from palette_conversion import label_2_colormap
+
 
 # This files provide the following functions:
 # 1. Load images and labels.
@@ -25,15 +28,20 @@ def _load_dataset_VOC(data_home, dataset_path, label_path, data_id, label_ignore
         X.append(io.imread(join(data_home, dataset_path, each_id + '.jpg')))
         cur_label = io.imread(join(data_home, label_path, each_id + '.png'))
         y.append(cur_label)
-        y_weights.append((cur_label != label_ignored).astype(np.float32))
+        y_weights.append((cur_label != label_ignored))
         ids.append(each_id)
     return X, y, y_weights, ids
 
 
-def load_VOC(data_home, label_ignored=21, resize_shape=None):
+def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, load_val=True, data_set=True):
     # Define the absolute path of the sub directories.
+    resized = False
     dataset_path = join(data_home, 'JPEGImages')
     label_path = join(data_home, 'SegmentationClassLabelImages')
+    if resize_shape:
+        dataset_path += '_{}'.format(resize_shape)
+        label_path += '_{}'.format(resize_shape)
+        resized = True
     train_idx_path = r'ImageSets/Segmentation/train.txt'
     val_idx_path = r'ImageSets/Segmentation/val.txt'
 
@@ -44,21 +52,44 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None):
     with open(join(data_home, val_idx_path)) as f:
         val_ids = f.read().split()
 
-    X_train, y_train, y_train_mask, id_train = _load_dataset_VOC(data_home, dataset_path, label_path, train_ids,
-                                                                 label_ignored)
-    X_val, y_val, y_val_mask, id_val = _load_dataset_VOC(data_home, dataset_path, label_path, val_ids, label_ignored)
+    X_train = y_train = y_train_mask = id_train = X_val = y_val = y_val_mask = id_val = []
+    if load_train:
+        logger.info('Loading training data...')
+        X_train, y_train, y_train_mask, id_train = _load_dataset_VOC(data_home, dataset_path, label_path, train_ids,
+                                                                     label_ignored)
+    if load_val:
+        logger.info('Loading validation data...')
+        X_val, y_val, y_val_mask, id_val = _load_dataset_VOC(data_home, dataset_path, label_path, val_ids,
+                                                             label_ignored)
 
     # Resize the images to the specified shape.
-    if resize_shape:
-        logger.info('Resizing images...')
-        X_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_train], dtype=np.uint8)
-        y_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_train], dtype=np.uint8)
-        y_train_mask = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_train_mask], dtype=np.uint8)
-        X_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_val], dtype=np.uint8)
-        y_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val], dtype=np.uint8)
-        y_val_mask = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val_mask], dtype=np.uint8)
+    if not resized and resize_shape:
+        if isinstance(resize_shape, int):
+            resize_shape = (resize_shape, resize_shape)
+        logger.info('cached resized images of the shape you providied do not exist.')
+        if load_train:
+            X_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_train],
+                               dtype=np.uint8)
+            y_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_train],
+                               dtype=np.uint8)
+            y_train_mask = np.array(
+                [transform.resize(image, resize_shape, preserve_range=True) for image in y_train_mask], dtype=np.uint8)
 
-    return list(map(np.array, [X_train, y_train, y_train_mask, id_train, X_val, y_val, y_val_mask, id_val]))
+        if load_val:
+            X_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_val],
+                             dtype=np.uint8)
+            y_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val],
+                             dtype=np.uint8)
+            y_val_mask = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val_mask],
+                                  dtype=np.uint8)
+
+    logger.info('Constructing dataset...')
+    if data_set:
+        return tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids]))), \
+               tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids])))
+    else:
+        return tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids])), \
+               tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
 
 
 def _minhou_cropping_helper(image, label, mask, id, patch_row, patch_col):
@@ -153,7 +184,7 @@ def load_minhou(data_home, nr_random_sampling, sampling_size=None, patch_row=5, 
                 cur_label = io.imread(join(data_home, each_minhou_dir, each_file))
 
         # get the mask
-        cur_mask = (cur_label != label_ignored).astype(float)
+        cur_mask = (cur_label != label_ignored)
 
         if not nr_random_sampling:
             X.append(cur_image)
@@ -177,7 +208,7 @@ def load_minhou(data_home, nr_random_sampling, sampling_size=None, patch_row=5, 
     return list(map(np.array, [X, y, mask, id]))
 
 
-def save_images(palette, labels, ids, output_home):
+def save_pred_results(palette, labels, ids, output_home):
     # Convert labels to colormaps.
     if not os.path.exists(output_home):
         logger.info('{} is not existing and created.'.format(output_home))

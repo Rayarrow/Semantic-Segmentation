@@ -2,17 +2,16 @@ import glob
 import math
 import os
 import re
-from os.path import join
 
 import numpy as np
 import tensorflow as tf
+from tensorflow.python.framework.errors_impl import OutOfRangeError
 
 from config import *
 
 
-def commission_training_task(model, dump_home, X_train, y_train, y_train_mask, X_val, y_val, y_val_mask, learning_rate,
-                             momentum, nr_epoch, batch_size, val_size, max_nr_iter=999999, val_interval=10,
-                             epoch_checkpoint=100):
+def commission_training_task(model, dump_home, d_train, d_val, learning_rate, momentum, nr_iter, batch_size,
+                             report_interval=10, val_iter_interval=1000, iter_ckpt_interval=500):
     """
     :param dump_home: the place to write summary.
     :param val_size: specify the number of validation samples.
@@ -21,24 +20,23 @@ def commission_training_task(model, dump_home, X_train, y_train, y_train_mask, X
     :param epoch_checkpoint: specify the number of epochs to save the model.
     :return:
     """
-    ckpt_home = join(dump_home, 'checkpoint')
-    summary_home = join(dump_home, 'summary')
+
+    logits_masked = tf.boolean_mask(model.logits, model.y_mask_input)
+    labels_masked = tf.boolean_mask(model.y_input, model.y_mask_input)
+    pred_masked = tf.boolean_mask(model.y_pred, model.y_mask_input)
 
     # define metrics
     with tf.variable_scope('metrics'):
-        train_accuracy = tf.metrics.accuracy(model.y_input, model.y_pred, model.y_mask_input, name='train_accuracy')
-        val_accuracy = tf.metrics.accuracy(model.y_input, model.y_pred, model.y_mask_input, name='val_accuracy')
+        train_accuracy = tf.metrics.accuracy(labels_masked, pred_masked, name='train_accuracy')
+        val_accuracy = tf.metrics.accuracy(labels_masked, pred_masked, name='val_accuracy')
 
-        train_meaniou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.num_classes, model.y_mask_input,
-                                            name='train_meaniou')
-        val_meaniou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.num_classes, model.y_mask_input,
-                                          name='val_meaniou')
+        train_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='train_meaniou')
+        val_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='val_meaniou')
 
-    # works the same way as the ops in tf.metrics.
-    loss_container = tf.placeholder(tf.float32, shape=[None], name='loss_container')
-    overall_loss = tf.reduce_mean(loss_container, name='loss_adder')
+    # inspect checkpoint home and summary home in case they do not exist.
+    ckpt_home = join(dump_home, 'checkpoint')
+    summary_home = join(dump_home, 'summary')
 
-    val_size = min(val_size, len(X_val))
     if not os.path.exists(ckpt_home):
         os.makedirs(ckpt_home)
         logger.info('{} does not exists and created.'.format(ckpt_home))
@@ -47,30 +45,24 @@ def commission_training_task(model, dump_home, X_train, y_train, y_train_mask, X
         os.makedirs(summary_home)
         logger.info('{} does not exists and created.'.format(summary_home))
 
-    # Deal with learning rate decay policy.
-    if isinstance(learning_rate, float):
-        learning_rate = [learning_rate, learning_rate]
-        decay_interval = [0, nr_epoch]
-    else:
-        decay_interval = learning_rate[1]
-        learning_rate = learning_rate[0]
-    learning_rate, decay_interval = iter(learning_rate), iter(decay_interval)
-    lr = next(learning_rate)
-    di = next(decay_interval)
+    # loss
+    cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels_masked, logits_masked)
 
-    learning_rate_holder = tf.placeholder(tf.float32, name='learning_rate')
-    total_loss = model.cross_entropy + tf.losses.get_regularization_loss()
-    trainer = tf.train.MomentumOptimizer(learning_rate_holder, momentum).minimize(total_loss)
+    print('regularized weights:')
+    print(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
+    total_loss = cross_entropy + tf.losses.get_regularization_loss()
+    global_step = tf.Variable(1, False, name='global_step')
+    trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
 
     # summary
-    loss_summary = tf.summary.scalar('loss', overall_loss)
+    loss_summary = tf.summary.scalar('loss', total_loss)
     train_accuracy_summary = tf.summary.scalar('train_accuracy', train_accuracy[0], collections='TRAIN_SCORE')
     val_accuracy_summary = tf.summary.scalar('val_accuracy', val_accuracy[0], collections='VAL_SCORE')
     train_meaniou_summary = tf.summary.scalar('train_meaniou', train_meaniou[0], collections='TRAIN_SCORE')
     val_meaniou_summary = tf.summary.scalar('val_meaniou', val_meaniou[0], collections='VAL_SCORE')
     train_summary = tf.summary.merge([train_accuracy_summary, train_meaniou_summary])
     val_summary = tf.summary.merge([val_accuracy_summary, val_meaniou_summary])
-    lr_summary = tf.summary.scalar('learning_rate', learning_rate_holder)
+    lr_summary = tf.summary.scalar('learning_rate', learning_rate)
 
     train_saver = tf.train.Saver()
 
@@ -81,83 +73,74 @@ def commission_training_task(model, dump_home, X_train, y_train, y_train_mask, X
         # restore the model and the progress of the training process.
         if os.path.exists(ckpt_home) and os.listdir(ckpt_home):
             model_ckpts = glob.glob(join(ckpt_home, 'model_*.ckpt.index'))
-            last_epoch = max(
+            last_iter = max(
                 [int(re.search(r'model_(\d+)', each_ckpt_name).group(1)) for each_ckpt_name in model_ckpts])
-            model_name = 'model_{}.ckpt'.format(last_epoch)
+            model_name = 'model_{}.ckpt'.format(last_iter)
             train_saver.restore(sess, join(ckpt_home, model_name))
             logger.info('{} exists and loaded successfully.'.format(model_name))
-            last_epoch += 1
+            last_iter += 1
 
         else:
-            last_epoch = 1
+            last_iter = 1
 
-        train_shuffler = shuffler(len(X_train))
-        val_shuffler = shuffler(len(X_val))
-        for epoch in range(last_epoch, nr_epoch + 1):
-            if epoch == di:
-                lr = next(learning_rate)
-                di = next(decay_interval)
+        train_it = d_train.shuffle(3000).repeat().batch(batch_size).make_one_shot_iterator().get_next()
 
-            sess.run(tf.local_variables_initializer())
-            loss_each_iter = []
-            X_train, y_train, y_train_mask = train_shuffler.shuffle(X_train, y_train, y_train_mask)
-            for i in range(min(max_nr_iter, math.ceil(len(X_train) / batch_size))):
-                X_train_next, y_train_next, y_train_mask_next = train_shuffler.next_batch(batch_size, i, X_train,
-                                                                                          y_train, y_train_mask)
-
-                _, cur_loss, _, _ = sess.run([trainer, total_loss, train_accuracy[1], train_meaniou[1]],
-                                             feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
-                                                        model.y_mask_input: y_train_mask_next,
-                                                        learning_rate_holder: lr})
-                loss_each_iter.append(cur_loss)
+        sess.run(tf.local_variables_initializer())
+        for iteration in range(last_iter, nr_iter + last_iter):
+            X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
+            # sess.run([trainer, train_accuracy[1], train_meaniou[1]],
+            #          feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
+            #                     model.y_mask_input: y_train_mask_next})
+            sess.run([trainer, train_accuracy[1], train_meaniou[1]],
+                     feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
+                                model.y_mask_input: y_train_mask_next})
 
             # train accuracy, mean IOU and summary for each epoch.
-            cur_loss, cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary = sess.run(
-                [overall_loss, loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary],
-                feed_dict={loss_container: loss_each_iter, learning_rate_holder: lr})
-            # sess.run(
-            #     [train_accuracy[0], train_meaniou[0]])
+            if iteration % report_interval == 0:
+                cur_loss, cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary = sess.run(
+                    [total_loss, loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary],
+                    feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
+                               model.y_mask_input: y_train_mask_next})
+                logger.info(
+                    'training {}/{}, accuracy: {}, mean IOU {}, loss: {}'.format(iteration, nr_iter, cur_train_acc,
+                                                                                 cur_train_miou, cur_loss))
+                summary_writer.add_summary(cur_train_summary, iteration)
+                summary_writer.add_summary(cur_loss_summary, iteration)
+                summary_writer.add_summary(cur_lr_summary, iteration)
+                logger.info('train summary {} written.'.format(iteration))
 
-            logger.info('training {}/{}, accuracy: {}, mean IOU {}, loss: {}'.format(epoch, nr_epoch, cur_train_acc,
-                                                                                     cur_train_miou, cur_loss))
-            summary_writer.add_summary(cur_train_summary, epoch)
-            summary_writer.add_summary(cur_loss_summary, epoch)
-            summary_writer.add_summary(cur_lr_summary, epoch)
-            logger.info('train summary {} written.'.format(epoch))
+                sess.run(tf.local_variables_initializer())
 
-            if epoch % val_interval == 0:
-                val_shuffler.shuffle(X_val, y_val, y_val_mask)
-                for i in range(math.ceil(val_size / batch_size)):
-                    X_val_next, y_val_next, y_val_mask_next = val_shuffler.next_batch(batch_size, i, X_val, y_val,
-                                                                                      y_val_mask)
+            if iteration % val_iter_interval == 0:
+                logger.info('Reach iteration {} and start validating...'.format(iteration))
+                val_batch_it = d_val.repeat(1).batch(batch_size).make_one_shot_iterator().get_next()
+
+                while True:
+                    try:
+                        X_val_next, y_val_next, y_val_mask_next, _ = sess.run(val_batch_it)
+                    except OutOfRangeError:
+                        logger.info('Finish validation')
+                        break
+
                     _, _ = sess.run([val_accuracy[1], val_meaniou[1]],
                                     feed_dict={model.X_input: X_val_next, model.y_input: y_val_next,
                                                model.y_mask_input: y_val_mask_next})
 
                 # val accuracy, mean IOU and summary for each epoch.
                 cur_val_acc, cur_val_miou, cur_val_summary = sess.run([val_accuracy[0], val_meaniou[0], val_summary])
-                logger.info('epoch {} val accuracy: {}, mean IOU {}'.format(epoch, cur_val_acc, cur_val_miou))
-                summary_writer.add_summary(cur_val_summary, epoch)
+                logger.info('iteration {} val accuracy: {}, mean IOU {}'.format(iteration, cur_val_acc, cur_val_miou))
+                summary_writer.add_summary(cur_val_summary, iteration)
 
-                logger.info('val summary {} written.'.format(epoch))
+                logger.info('val summary {} written.'.format(iteration))
 
-            if epoch % epoch_checkpoint == 0:
-                train_saver.save(sess, join(ckpt_home, 'model_{}.ckpt'.format(epoch)))
-                logger.info('model_{} saved.'.format(epoch))
-
-            # if epoch % 10 == 0:
-            #     val_idx = np.random.randint(0, len(X_val), val_size)
-            #
-            #     cur_accuracy = sess.run(model.accuracy,
-            #                             feed_dict={model.X_input: X_val[val_idx], model.y_input: y_val[val_idx],
-            #                                        model.y_mask_input: y_val_mask[val_idx]})
-            #
-            #     logger.info('epoch {} val accuracy: {}'.format(epoch, cur_accuracy))
+            if iteration % iter_ckpt_interval == 0:
+                train_saver.save(sess, join(ckpt_home, 'model_{}.ckpt'.format(iteration)))
+                logger.info('model_{} saved.'.format(iteration))
 
 
 class shuffler():
     def __init__(self, len):
-        self.random_idx = list(range(len))
+        self.random_idx = list(range(len)) if len is not None else None
 
     def shuffle(self, *args):
         np.random.shuffle(self.random_idx)
@@ -178,16 +161,19 @@ class shuffler():
         return res
 
 
-def commission_predict(model, model_epoch, dump_home, X, batch_size=1):
-    # mean_iou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.output_class, model.y_mask_input, name='mean_iou')
-    # accuracy =
+def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
+    mean_iou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.output_class, model.y_mask_input,
+                                   name='pred_mean_iou')
+    accuracy = tf.metrics.accuracy(model.y_input, model.y_pred, model.y_mask_input, name='pred_accuracy')
     if dump_home:
         ckpt_home = join(dump_home, 'checkpoint')
 
     train_saver = tf.train.Saver()
+    s = shuffler(None)
 
     with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
+        sess.run(tf.local_variables_initializer())
         if dump_home and os.path.exists(ckpt_home) and os.listdir(ckpt_home):
             model_ckpts = glob.glob(join(ckpt_home, 'model_*.ckpt.index'))
             if model_epoch:
@@ -201,13 +187,12 @@ def commission_predict(model, model_epoch, dump_home, X, batch_size=1):
 
         res = []
         nr_iter = math.ceil(len(X) / batch_size)
-        if batch_size != 1:
-            for iter in range(nr_iter):
-                logger.info('predicting {} / {}'.format(iter + 1, nr_iter))
-                res.extend(
-                    sess.run(model.y_pred, feed_dict={model.X_input: X[iter * batch_size: (iter + 1) * batch_size]}))
-        else:
-            for iter in range(nr_iter):
-                logger.info('predicting {} / {}'.format(iter + 1, nr_iter))
-                res.extend(sess.run(model.y_pred, feed_dict={model.X_input: X[iter:iter + 1][0][None]}))
-    return res
+        for iter in range(nr_iter):
+            X_n, y_n, mask_n = s.next_batch(batch_size, iter, X, y, mask)
+            logger.info('predicting {} / {}'.format(iter + 1, nr_iter))
+            y_pred, _, _ = sess.run([model.y_pred, mean_iou[1], accuracy[1]],
+                                    feed_dict={model.X_input: X_n, model.y_input: y_n, model.y_mask_input: mask_n})
+            res.extend(y_pred)
+        accuracy, mean_iou = sess.run([mean_iou[0], accuracy[0]])
+        logger.info('prediction accuracy: {}\nprediction mean IoU: {}'.format(accuracy, mean_iou))
+    return res, accuracy, mean_iou
