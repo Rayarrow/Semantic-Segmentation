@@ -21,9 +21,10 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
     :return:
     """
 
-    logits_masked = tf.boolean_mask(model.logits, model.y_mask_input)
-    labels_masked = tf.boolean_mask(model.y_input, model.y_mask_input)
-    pred_masked = tf.boolean_mask(model.y_pred, model.y_mask_input)
+    with tf.variable_scope('mask'):
+        logits_masked = tf.boolean_mask(model.logits, model.y_mask_input, name='logit_mask')
+        labels_masked = tf.boolean_mask(model.y_input, model.y_mask_input, name='label_mask')
+        pred_masked = tf.boolean_mask(model.y_pred, model.y_mask_input, name='pred_mask')
 
     # define metrics
     with tf.variable_scope('metrics'):
@@ -68,6 +69,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
 
     with tf.Session() as sess:
         summary_writer = tf.summary.FileWriter(join(summary_home), sess.graph)
+        exit(-1)
         sess.run(tf.global_variables_initializer())
 
         # restore the model and the progress of the training process.
@@ -85,22 +87,21 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
 
         train_it = d_train.shuffle(3000).repeat().batch(batch_size).make_one_shot_iterator().get_next()
 
+        cur_loss = np.inf
         sess.run(tf.local_variables_initializer())
         for iteration in range(last_iter, nr_iter + last_iter):
-            X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
-            # sess.run([trainer, train_accuracy[1], train_meaniou[1]],
-            #          feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
-            #                     model.y_mask_input: y_train_mask_next})
-            sess.run([trainer, train_accuracy[1], train_meaniou[1]],
-                     feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
-                                model.y_mask_input: y_train_mask_next})
+            # X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
+            # Get next batch of data.
+            next_batch = sess.run(train_it)
+            fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
+            if model.ignore:
+                fd[model.y_mask_input] = next_batch[2]
+            cur_loss, _, _, _ = sess.run([total_loss, trainer, train_accuracy[1], train_meaniou[1]], feed_dict=fd)
 
             # train accuracy, mean IOU and summary for each epoch.
             if iteration % report_interval == 0:
-                cur_loss, cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary = sess.run(
-                    [total_loss, loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary],
-                    feed_dict={model.X_input: X_train_next, model.y_input: y_train_next,
-                               model.y_mask_input: y_train_mask_next})
+                cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary = sess.run(
+                    [loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary], feed_dict=fd)
                 logger.info(
                     'training {}/{}, accuracy: {}, mean IOU {}, loss: {}'.format(iteration, nr_iter, cur_train_acc,
                                                                                  cur_train_miou, cur_loss))
@@ -117,14 +118,15 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
 
                 while True:
                     try:
-                        X_val_next, y_val_next, y_val_mask_next, _ = sess.run(val_batch_it)
+                        next_batch = sess.run(val_batch_it)
+                        fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
+                        if model.ignore:
+                            fd[model.y_mask_input] = next_batch[2]
                     except OutOfRangeError:
                         logger.info('Finish validation')
                         break
 
-                    _, _ = sess.run([val_accuracy[1], val_meaniou[1]],
-                                    feed_dict={model.X_input: X_val_next, model.y_input: y_val_next,
-                                               model.y_mask_input: y_val_mask_next})
+                    _, _ = sess.run([val_accuracy[1], val_meaniou[1]], feed_dict=fd)
 
                 # val accuracy, mean IOU and summary for each epoch.
                 cur_val_acc, cur_val_miou, cur_val_summary = sess.run([val_accuracy[0], val_meaniou[0], val_summary])

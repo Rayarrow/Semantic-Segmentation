@@ -1,24 +1,7 @@
 from models_constructor import *
 
-FRONT_VGG16 = 'vgg16'
-FRONT_RES50 = 'res50'
 
-
-def get_front(front_name, image_height, image_width, image_channel, weight_decay=None, beta_decay=None,
-              gamma_decay=None, get_FCN=True):
-    """
-    Construct the feature-extraction layers. (layers before upsampling).
-    """
-    if front_name == FRONT_RES50:
-        return ResNet50(image_height, image_width, image_channel, get_FCN, weight_decay, beta_decay, gamma_decay)
-
-    elif front_name == FRONT_VGG16:
-        return VGG16(image_height, image_width, image_channel, get_FCN)
-
-    else:
-        raise Exception('invalid front end network.')
-
-
+# Not used for now.
 def get_ele(model, upsample_mode):
     get_conv = model.front.cc.get_conv
 
@@ -38,6 +21,8 @@ class VGG16():
         get_conv = self.cc.get_conv
         get_maxpooling = self.cc.get_maxpooling
         get_fc = self.cc.get_fc
+        self.image_height = image_height
+        self.image_width = image_width
 
         # Declare the mean of each channel in "(b, g, r)" order, which is gotten from ImageNet dataset.
         with tf.variable_scope('input'):
@@ -105,9 +90,12 @@ class VGG16():
 
 class ResNet50():
     def __init__(self, image_height, image_width, image_channel=3, get_FCN=False, weight_decay=None, beta_decay=None,
-                 gamma_decay=None):
+                 gamma_decay=None, rates=(2, 4)):
         self.cc = component_constructor(res50_npy_path, weight_decay=weight_decay, beta_decay=beta_decay,
                                         gamma_decay=gamma_decay)
+        self.image_height = image_height
+        self.image_width = image_width
+
         get_conv = self.cc.get_conv
         get_bn = self.cc.get_bn
         get_maxpooling = self.cc.get_maxpooling
@@ -135,10 +123,10 @@ class ResNet50():
             self.pool3 = get_bottleneck(self.pool2, 3, 4, 3, pooling=(0, 1))
 
         with tf.variable_scope('block4'):
-            self.pool4 = get_bottleneck(self.pool3, 4, 6, 3, atrous=True, rates=2)
+            self.pool4 = get_bottleneck(self.pool3, 4, 6, 3, atrous=True, rates=rates[0])
 
         with tf.variable_scope('block5'):
-            self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous=True, rates=4)
+            self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous=True, rates=rates[1])
 
         if not get_FCN:
             self.global_pooling = tf.reduce_mean(self.pool5, axis=[1, 2])
@@ -147,28 +135,25 @@ class ResNet50():
 
 
 class FCN():
-    def __init__(self, front_name, stride, num_classes, image_height=None, image_width=None, image_channel=3,
-                 ignore=True, get_FCN=True):
+    def __init__(self, front_end, stride, num_classes, ignore=True):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
-        self.front = get_front(front_name, image_height, image_width, image_channel, get_FCN)
+        self.front = front_end
         self.X_input = self.front.X_input
 
         get_conv = self.front.cc.get_conv
         upsample = self.front.cc.get_deconv
 
         self.num_classes = num_classes
+        image_height = self.front.image_height
+        image_width = self.front.image_width
 
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
         if ignore:
             self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-        else:
-            self.y_mask_input = 1.0
 
         # Overwrite `y_input` of the FCN network.
         self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
@@ -231,16 +216,15 @@ class FCN():
 
 
 class PSPNet():
-    def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3,
-                 ignore=True, weight_decay=None, beta_decay=None, gamma_decay=None, get_FCN=True):
+    def __init__(self, front_end, num_classes, ignore=True):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
-        self.front = get_front(front_name, image_height, image_width, image_channel, weight_decay, beta_decay,
-                               gamma_decay, get_FCN)
+        self.front = front_end
         self.X_input = self.front.X_input
+        self.ignore = ignore
 
         get_conv = self.front.cc.get_conv
         get_bn = self.front.cc.get_bn
@@ -249,13 +233,13 @@ class PSPNet():
 
         self.num_classes = num_classes
 
+        image_height = front_end.image_height
+        image_width = front_end.image_width
+
+
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
         if ignore:
             self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-        else:
-            self.y_mask_input = 1.0
 
         # Overwrite `y_input` of the original classification network.
         self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
@@ -308,30 +292,30 @@ class PSPNet():
 
 
 class Deeplabv2():
-    def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3,
-                 ignore=True, get_FCN=True):
+    def __init__(self, front_end, num_classes, ignore=True):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
-        self.front = get_front(front_name, image_height, image_width, image_channel, get_FCN)
+        self.front = front_end
+        self.num_classes = num_classes
+        self.ignore = ignore
         self.X_input = self.front.X_input
         self.input_shape = tf.shape(self.X_input)
 
         get_conv = self.front.cc.get_conv
-        get_bn = self.front.cc.get_bn
         upsample = self.front.cc.bilinear
 
         self.num_classes = num_classes
+        image_height = self.front.image_height
+        image_width = self.front.image_width
 
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
         if ignore:
             self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
         # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
         # ignored.
-        else:
-            self.y_mask_input = 1.0
 
         # Overwrite `y_input` of the original classification network.
         self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
@@ -353,66 +337,63 @@ class Deeplabv2():
 
         self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
 
-
-class FPN():
-    def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3, ignore=True,
-                 upsample_mode=UPSAMPLE_BILINEAR, lateral_channel=256):
-        """
-        :param stride: specify the stride of the FCN network (FCN#{stride}s).
-        :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
-        """
-
-        self.front = get_front(front_name, image_height, image_width, image_channel)
-        self.X_input = self.front.X_input
-
-        get_conv = self.front.cc.get_conv
-        if upsample_mode == UPSAMPLE_BILINEAR:
-            upsample = self.front.cc.bilinear
-        elif upsample_mode == UPSAMPLE_DECONV:
-            upsample = self.front.cc.get_deconv
-        else:
-            raise Exception('invalid upsample mode provided.')
-
-        self.num_classes = num_classes
-
-        # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-        else:
-            self.y_mask_input = 1.0
-
-        # Overwrite `y_input` of the FCN network.
-        self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
-
-        # The final output shape of the network, used to determine the output shape of the transpose convolution
-        # (deconvolution) layer.
-        self.input_shape = tf.shape(self.X_input, name='shape_input')
-        self.output_shape = tf.stack([self.input_shape[0], self.input_shape[1], self.input_shape[2], num_classes],
-                                     name='shape_output')
-
-        with tf.variable_scope('fuse1x'):
-            self.fuse1x = get_conv('lateral1x', self.front.pool5, pretrained=False, num_output=lateral_channel)
-
-        with tf.variable_scope('fuse2x'):
-            self.upsample2x = upsample('upsample2x', self.fuse1x, output_shape=tf.shape(self.front.pool4))
-            self.lateral2x = get_conv('lateral2x', self.front.pool4, pretrained=False, num_output=lateral_channel)
-            self.fuse2x = tf.add(self.upsample2x, self.lateral2x)
-
-        with tf.variable_scope('fuse4x'):
-            self.upsample4x = upsample('upsample4x', self.fuse2x, output_shape=tf.shape(self.front.pool3))
-            self.lateral4x = get_conv('lateral4x', self.front.pool3, pretrained=False, num_output=lateral_channel)
-            self.fuse4x = tf.add(self.upsample4x, self.lateral4x)
-
-        with tf.variable_scope('fuse8x'):
-            self.upsample8x = upsample('upsample8x', self.fuse4x, output_shape=tf.shape(self.front.pool2))
-            self.lateral8x = get_conv('lateral8x', self.front.pool2, pretrained=False, num_output=lateral_channel)
-            self.fuse8x = tf.add(self.upsample8x, self.lateral8x)
-
-        self.upsample32x = upsample('upsample32x', self.fuse8x, output_shape=tf.shape(self.front.X_input))
-        self.score = get_conv('score', self.upsample32x, pretrained=False, num_output=num_classes)
-
-        self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')
-
-
+# class FPN():
+#     def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3, ignore=True,
+#                  upsample_mode=UPSAMPLE_BILINEAR, lateral_channel=256):
+#         """
+#         :param stride: specify the stride of the FCN network (FCN#{stride}s).
+#         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
+#         """
+#
+#         self.front = get_front(front_name, image_height, image_width, image_channel)
+#         self.X_input = self.front.X_input
+#
+#         get_conv = self.front.cc.get_conv
+#         if upsample_mode == UPSAMPLE_BILINEAR:
+#             upsample = self.front.cc.bilinear
+#         elif upsample_mode == UPSAMPLE_DECONV:
+#             upsample = self.front.cc.get_deconv
+#         else:
+#             raise Exception('invalid upsample mode provided.')
+#
+#         self.num_classes = num_classes
+#
+#         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
+#         if ignore:
+#             self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
+#         # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
+#         # ignored.
+#         else:
+#             self.y_mask_input = 1.0
+#
+#         # Overwrite `y_input` of the FCN network.
+#         self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
+#
+#         # The final output shape of the network, used to determine the output shape of the transpose convolution
+#         # (deconvolution) layer.
+#         self.input_shape = tf.shape(self.X_input, name='shape_input')
+#         self.output_shape = tf.stack([self.input_shape[0], self.input_shape[1], self.input_shape[2], num_classes],
+#                                      name='shape_output')
+#
+#         with tf.variable_scope('fuse1x'):
+#             self.fuse1x = get_conv('lateral1x', self.front.pool5, pretrained=False, num_output=lateral_channel)
+#
+#         with tf.variable_scope('fuse2x'):
+#             self.upsample2x = upsample('upsample2x', self.fuse1x, output_shape=tf.shape(self.front.pool4))
+#             self.lateral2x = get_conv('lateral2x', self.front.pool4, pretrained=False, num_output=lateral_channel)
+#             self.fuse2x = tf.add(self.upsample2x, self.lateral2x)
+#
+#         with tf.variable_scope('fuse4x'):
+#             self.upsample4x = upsample('upsample4x', self.fuse2x, output_shape=tf.shape(self.front.pool3))
+#             self.lateral4x = get_conv('lateral4x', self.front.pool3, pretrained=False, num_output=lateral_channel)
+#             self.fuse4x = tf.add(self.upsample4x, self.lateral4x)
+#
+#         with tf.variable_scope('fuse8x'):
+#             self.upsample8x = upsample('upsample8x', self.fuse4x, output_shape=tf.shape(self.front.pool2))
+#             self.lateral8x = get_conv('lateral8x', self.front.pool2, pretrained=False, num_output=lateral_channel)
+#             self.fuse8x = tf.add(self.upsample8x, self.lateral8x)
+#
+#         self.upsample32x = upsample('upsample32x', self.fuse8x, output_shape=tf.shape(self.front.X_input))
+#         self.score = get_conv('score', self.upsample32x, pretrained=False, num_output=num_classes)
+#
+#         self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')

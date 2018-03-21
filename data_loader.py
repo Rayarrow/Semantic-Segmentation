@@ -33,7 +33,8 @@ def _load_dataset_VOC(data_home, dataset_path, label_path, data_id, label_ignore
     return X, y, y_weights, ids
 
 
-def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, load_val=True, data_set=True):
+def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, load_val=True, data_set=True,
+             num_train=None, num_val=None):
     # Define the absolute path of the sub directories.
     resized = False
     dataset_path = join(data_home, 'JPEGImages')
@@ -47,10 +48,10 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, lo
 
     # load the ids of validation images.
     with open(join(data_home, train_idx_path)) as f:
-        train_ids = f.read().split()
+        train_ids = f.read().split()[:num_train]
 
     with open(join(data_home, val_idx_path)) as f:
-        val_ids = f.read().split()
+        val_ids = f.read().split()[:num_val]
 
     X_train = y_train = y_train_mask = id_train = X_val = y_val = y_val_mask = id_val = []
     if load_train:
