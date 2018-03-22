@@ -19,6 +19,7 @@ seg_parser.add_argument('--resize_shape', default=224)
 
 # Learning control
 seg_parser.add_argument('--learning_rate', type=float, default=1e-4)
+seg_parser.add_argument('--lr_decay', type=str, default='poly')
 seg_parser.add_argument('--momentum', type=float, default=0.9)
 seg_parser.add_argument('--weight_decay', type=float, default=1e-4)
 seg_parser.add_argument('--nr_iter', type=int, default=130000)
@@ -52,6 +53,7 @@ report_interval = args.report_interval
 val_interval = args.val_interval
 iter_ckpt_interval = args.iter_ckpt_interval
 weight_decay = args.weight_decay
+lr_decay = args.lr_decay
 
 # The path where the VOC dataset is located.
 
@@ -65,19 +67,15 @@ if not os.path.exists(VOC_dump_home):
 with open(join(VOC_dump_home, 'parameters.txt'), 'w') as f:
     f.write('\n'.join(args.__str__()[10:-1].split(', ')))
 
-# model = FCN(FRONT_VGG16, FCN_stride, num_classes, get_FCN=get_FCN)
-# X_train, y_train, y_train_mask, id_train, X_val, y_val, y_val_mask, id_val = load_VOC(VOC_home, 21)
-
 front_end = ResNet50(473, 473, 3, get_FCN, weight_decay)
 model = PSPNet(front_end, num_classes)
-d_train, d_val = load_VOC(VOC_home, 21, 473, num_train=320, num_val=80)
+d_train, d_val = load_VOC(VOC_home, 21, resize_shape, num_train=20, num_val=10, data_set=False)
 
 if is_train:
-    commission_training_task(model, VOC_dump_home, d_train, d_val, learning_rate, momentum, nr_iter, batch_size,
+    commission_training_task(model, VOC_dump_home, d_train, d_val, learning_rate, lr_decay, momentum, nr_iter, batch_size,
                              report_interval, val_interval, iter_ckpt_interval)
 
 if is_predict:
-    _, (X_val, y_val, y_mask_val, id_val) = load_VOC(VOC_home, 21, load_train=False, data_set=False)
+    X_val, y_val, y_mask_val, id_val = d_val
     y_pred, acc, mIoU = commission_predict(model, None, VOC_dump_home, X_val, y_val, y_mask_val)
     save_pred_results(VOC_palette, y_pred, id_val, join(VOC_dump_home, 'output_{}@{}'.format(acc, mIoU)))
-

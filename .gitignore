@@ -1,0 +1,7 @@
+__pycache__/
+.idea/
+data/
+obsolete/
+test_files/
+lab*.py
+*.pyc

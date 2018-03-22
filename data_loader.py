@@ -84,8 +84,8 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, lo
             y_val_mask = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val_mask],
                                   dtype=np.uint8)
 
-    logger.info('Constructing dataset...')
     if data_set:
+        logger.info('Constructing dataset...')
         return tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids]))), \
                tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids])))
     else:

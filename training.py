@@ -10,7 +10,7 @@ from tensorflow.python.framework.errors_impl import OutOfRangeError
 from config import *
 
 
-def commission_training_task(model, dump_home, d_train, d_val, learning_rate, momentum, nr_iter, batch_size,
+def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr_decay, momentum, nr_iter, batch_size,
                              report_interval=10, val_iter_interval=1000, iter_ckpt_interval=500):
     """
     :param dump_home: the place to write summary.
@@ -53,6 +53,8 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
     print(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
     total_loss = cross_entropy + tf.losses.get_regularization_loss()
     global_step = tf.Variable(1, False, name='global_step')
+    if lr_decay == 'poly':
+        learning_rate = tf.train.polynomial_decay(learning_rate, global_step, nr_iter, power=0.9)
     trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
 
     # summary
@@ -69,7 +71,6 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
 
     with tf.Session() as sess:
         summary_writer = tf.summary.FileWriter(join(summary_home), sess.graph)
-        exit(-1)
         sess.run(tf.global_variables_initializer())
 
         # restore the model and the progress of the training process.
@@ -85,14 +86,17 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
         else:
             last_iter = 1
 
-        train_it = d_train.shuffle(3000).repeat().batch(batch_size).make_one_shot_iterator().get_next()
-
         cur_loss = np.inf
+        nr_train = len(d_train[0])
+        nr_val = len(d_val[0])
+        s_train = shuffler(nr_train)
+        s_val = shuffler(nr_val)
+
         sess.run(tf.local_variables_initializer())
         for iteration in range(last_iter, nr_iter + last_iter):
             # X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
             # Get next batch of data.
-            next_batch = sess.run(train_it)
+            next_batch = s_train.choice(batch_size, *d_train[:-1])
             fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
             if model.ignore:
                 fd[model.y_mask_input] = next_batch[2]
@@ -114,17 +118,12 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, mo
 
             if iteration % val_iter_interval == 0:
                 logger.info('Reach iteration {} and start validating...'.format(iteration))
-                val_batch_it = d_val.repeat(1).batch(batch_size).make_one_shot_iterator().get_next()
 
-                while True:
-                    try:
-                        next_batch = sess.run(val_batch_it)
-                        fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
-                        if model.ignore:
-                            fd[model.y_mask_input] = next_batch[2]
-                    except OutOfRangeError:
-                        logger.info('Finish validation')
-                        break
+                for i in range(int(np.ceil(nr_val/batch_size))):
+                    next_batch = s_val.next_batch(batch_size, i, *d_val[:-1])
+                    fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
+                    if model.ignore:
+                        fd[model.y_mask_input] = next_batch[2]
 
                     _, _ = sess.run([val_accuracy[1], val_meaniou[1]], feed_dict=fd)
 
@@ -158,9 +157,23 @@ class shuffler():
             if batch_size != 1:
                 res.append(each_arg[batch_size * iter: batch_size * (iter + 1)])
             else:
-                res.append(each_arg[batch_size * iter: batch_size * (iter + 1)][0][None])
+                res.append(each_arg[iter][None])
 
         return res
+
+
+    def choice(self, batch_size, *args):
+        res = []
+        idx = np.random.choice(self.random_idx, batch_size, False)
+        for each_arg in args:
+            if batch_size != 1:
+                res.append(each_arg[idx])
+            else:
+                raise Exception('to be implemented')
+
+        return res
+
+
 
 
 def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
