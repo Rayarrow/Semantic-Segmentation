@@ -9,30 +9,30 @@ from training import *
 seg_parser = ArgumentParser('semantic Segmentation')
 # IO
 seg_parser.add_argument('--model_name', type=str, default='unknown', help='Taken as ')
-seg_parser.add_argument('--dump_root', type=str, default='/tmp/')
+seg_parser.add_argument('--dump_root', type=str, default='')
 
 # Model
-seg_parser.add_argument('--num_classes', '-NC', type=int, default=21)
-seg_parser.add_argument('--ignore', '-I', type=int, default=255)
-seg_parser.add_argument('--get_FCN', '-FCN', type=int, default=1)
-seg_parser.add_argument('--FCN_stride', '-S', type=int, default=32)
-seg_parser.add_argument('--resize_shape', '-RS', type=int, default=None)
+seg_parser.add_argument('--num_classes', type=int, default=6)
+seg_parser.add_argument('--get_FCN', type=int, default=1)
+seg_parser.add_argument('--FCN_stride', type=int, default=32)
+seg_parser.add_argument('--resize_shape', default = 473)
+seg_parser.add_argument('--if_da', default = True)
+seg_parser.add_srgument('if_deformable', default = True)
+
 
 # Learning control
-seg_parser.add_argument('--learning_rate', '-LR', type=float, default=1e-4)
-seg_parser.add_argument('--lr_decay', '-LD', type=str, default='poly')
-seg_parser.add_argument('--momentum', '-M', type=float, default=0.9)
-seg_parser.add_argument('--weight_decay', '-WD', type=float, default=0)
-seg_parser.add_argument('--nr_iter', '-NI', type=int, default=3500)
-seg_parser.add_argument('--batch_size', '-BS', type=int, default=4)
-seg_parser.add_argument('--is_train', '-T', action='store_true')
-seg_parser.add_argument('--is_predict', '-P', action='store_true')
-seg_parser.add_argument('--devices', '-DE', type=str, default='0')
-seg_parser.add_argument('--report_interval', '-RI', type=int, default=10)
-seg_parser.add_argument('--val_interval', '-VI', type=int, default=1000)
-seg_parser.add_argument('--iter_ckpt_interval', '-ICI', type=int, default=2000)
-
-seg_parser.add_argument('--debug', '-D', action='store_true')
+seg_parser.add_argument('--learning_rate', type=float, default=1e-4)
+seg_parser.add_argument('--lr_decay', type=str, default='Poly')
+seg_parser.add_argument('--momentum', type=float, default=0.9)
+seg_parser.add_argument('--weight_decay', type=float, default=1e-4)
+seg_parser.add_argument('--nr_iter', type=int, default=160000)
+seg_parser.add_argument('--batch_size', type=int, default=6)
+seg_parser.add_argument('--is_train', action='store_true')
+seg_parser.add_argument('--is_predict', action='store_true')
+seg_parser.add_argument('--devices', type=str, default='4')
+seg_parser.add_argument('--report_interval', type=int, default=50)
+seg_parser.add_argument('--val_interval', type=int, default=500000)
+seg_parser.add_argument('--iter_ckpt_interval', type=int, default=2000)
 args = seg_parser.parse_args()
 
 pprint(args)
@@ -49,6 +49,7 @@ nr_iter = args.nr_iter
 batch_size = args.batch_size
 is_train = args.is_train
 is_predict = args.is_predict
+if_da = args.if_da
 resize_shape = args.resize_shape
 FCN_stride = args.FCN_stride
 get_FCN = args.get_FCN
@@ -57,8 +58,6 @@ val_interval = args.val_interval
 iter_ckpt_interval = args.iter_ckpt_interval
 weight_decay = args.weight_decay
 lr_decay = args.lr_decay
-ignore = args.ignore
-debug = args.debug
 
 # The path where the VOC dataset is located.
 
@@ -68,26 +67,31 @@ VOC_dump_home = join(dump_root, model_name)
 
 if not os.path.exists(VOC_dump_home):
     os.makedirs(VOC_dump_home)
-    logger.info('{} does not exists and created.'.format(VOC_dump_home))
 
 with open(join(VOC_dump_home, 'parameters.txt'), 'w') as f:
     f.write('\n'.join(args.__str__()[10:-1].split(', ')))
 
-front_end = ResNet50(resize_shape, resize_shape, 3, get_FCN, weight_decay)
-model = PSPNet(front_end, num_classes)
-# front_end = VGG16(None, None, 3, get_FCN)
-# model = FCN(front_end, FCN_stride, num_classes)
-if debug:
-    d_train, d_val = load_VOC(VOC_home, ignore, resize_shape, data_set=False, num_train=50, num_val=50)
-else:
-    d_train, d_val = load_VOC(VOC_home, ignore, resize_shape, data_set=False)
+front_end = ResNet50(resize_shape, resize_shape, 3, get_FCN, weight_decay, if_da, if_deformable=if_deformable)
+model = deeplab_v3_plus(front_end,  num_classes)
+#model = deeplab_v3(front_end,  num_classes)
+#model = PSPNet(front_end, num_classes)
 
+#d_train, d_val = load_VOC(VOC_home, 0, resize_shape, num_train=20000, num_val=10000, data_set=False)
+
+ISPRS_home = r'/home/zxw/ISPRS/Vaihingen/'
+d_train = load_isprs_train(ISPRS_home, sampling_size = [593, 593])
+d_val = load_isprs_val(ISPRS_home, sampling_size = [593, 593])
+
+is_train = True
 if is_train:
-    commission_training_task(model, VOC_dump_home, d_train, d_val, learning_rate, lr_decay, momentum, nr_iter,
-                             batch_size,
+    commission_training_task(model, VOC_dump_home, d_train, d_val, learning_rate, lr_decay, momentum, nr_iter, batch_size,
                              report_interval, val_interval, iter_ckpt_interval)
 
 if is_predict:
-    X_val, y_val, y_mask_val, id_val = load_VOC(VOC_home, load_train=False)
+    X_val, y_val, y_mask_val, id_val = d_val
     y_pred, acc, mIoU = commission_predict(model, None, VOC_dump_home, X_val, y_val, y_mask_val)
     save_pred_results(VOC_palette, y_pred, id_val, join(VOC_dump_home, 'output_{}@{}'.format(acc, mIoU)))
+
+
+
+

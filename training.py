@@ -5,6 +5,10 @@ import re
 
 import numpy as np
 import tensorflow as tf
+import random
+from tensorflow.python.framework.errors_impl import OutOfRangeError
+from skimage import transform
+from data_loader import tf_da
 
 from config import *
 
@@ -20,10 +24,17 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
     :return:
     """
 
-    with tf.variable_scope('mask'):
-        logits_masked = tf.boolean_mask(model.logits, model.y_mask_input, name='logit_mask')
-        labels_masked = tf.boolean_mask(model.y_input, model.y_mask_input, name='label_mask')
-        pred_masked = tf.boolean_mask(model.y_pred, model.y_mask_input, name='pred_mask')
+
+    logits = tf.reshape(model.logits, [-1, model.num_classes])
+    raw_gt = tf.reshape(model.y_input_da, [-1, ])
+    raw_pred = tf.reshape(model.y_pred, [-1, ])
+
+    indices = tf.where(tf.less_equal(raw_gt, model.num_classes - 1))
+    labels_masked = tf.cast(tf.gather(raw_gt, indices), tf.int32)
+    logits_masked = tf.gather(logits, indices)
+    pred_masked = tf.cast(tf.gather(raw_pred, indices), tf.int32)
+
+
 
     # define metrics
     with tf.variable_scope('metrics'):
@@ -32,6 +43,8 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
 
         train_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='train_meaniou')
         val_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='val_meaniou')
+
+    #print('mask checked')
 
     # inspect checkpoint home and summary home in case they do not exist.
     ckpt_home = join(dump_home, 'checkpoint')
@@ -54,9 +67,8 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
     global_step = tf.Variable(1, False, name='global_step')
     if lr_decay == 'poly':
         learning_rate = tf.train.polynomial_decay(learning_rate, global_step, nr_iter, power=0.9)
-    else:
-        learning_rate = tf.Variable(learning_rate, False, name='learning_rate')
-    trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
+    trainer = tf.train.AdamOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
+    #trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
 
     # summary
     loss_summary = tf.summary.scalar('loss', total_loss)
@@ -87,6 +99,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
         else:
             last_iter = 1
 
+
         cur_loss = np.inf
         nr_train = len(d_train[0])
         nr_val = len(d_val[0])
@@ -95,23 +108,24 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
 
         sess.run(tf.local_variables_initializer())
         for iteration in range(last_iter, nr_iter + last_iter):
-            # X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
             # Get next batch of data.
             next_batch = s_train.choice(batch_size, *d_train[:-1])
+
+
+
+
             fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
-            if model.ignore:
-                fd[model.y_mask_input] = next_batch[2]
+
+
             cur_loss, _, _, _ = sess.run([total_loss, trainer, train_accuracy[1], train_meaniou[1]], feed_dict=fd)
 
             # train accuracy, mean IOU and summary for each epoch.
             if iteration % report_interval == 0:
-                cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary, cur_lr = sess.run(
-                    [loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary, learning_rate],
-                    feed_dict=fd)
+                cur_loss_summary, cur_train_acc, cur_train_miou, cur_train_summary, cur_lr_summary = sess.run(
+                    [loss_summary, train_accuracy[0], train_meaniou[0], train_summary, lr_summary], feed_dict=fd)
                 logger.info(
-                    'training {}/{}, accuracy: {}, mean IOU {}, loss: {}, lr: {:6f}'.format(iteration, nr_iter,
-                                                                                         cur_train_acc, cur_train_miou,
-                                                                                         cur_loss, cur_lr))
+                    'training {}/{}, accuracy: {}, mean IOU {}, loss: {}'.format(iteration, nr_iter, cur_train_acc,
+                                                                                 cur_train_miou, cur_loss))
                 summary_writer.add_summary(cur_train_summary, iteration)
                 summary_writer.add_summary(cur_loss_summary, iteration)
                 summary_writer.add_summary(cur_lr_summary, iteration)
@@ -122,7 +136,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
             if iteration % val_iter_interval == 0:
                 logger.info('Reach iteration {} and start validating...'.format(iteration))
 
-                for i in range(int(np.ceil(nr_val / batch_size))):
+                for i in range(int(np.ceil(nr_val/batch_size))):
                     next_batch = s_val.next_batch(batch_size, i, *d_val[:-1])
                     fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
                     if model.ignore:
@@ -160,9 +174,10 @@ class shuffler():
             if batch_size != 1:
                 res.append(each_arg[batch_size * iter: batch_size * (iter + 1)])
             else:
-                res.append(each_arg[batch_size * iter: batch_size * (iter + 1)][0][None])
+                res.append(each_arg[iter][None])
 
         return res
+
 
     def choice(self, batch_size, *args):
         res = []
@@ -171,13 +186,15 @@ class shuffler():
             if batch_size != 1:
                 res.append(each_arg[idx])
             else:
-                res.append(each_arg[idx][0][None])
+                raise Exception('to be implemented')
 
         return res
 
 
+
+
 def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
-    mean_iou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.num_classes, model.y_mask_input,
+    mean_iou = tf.metrics.mean_iou(model.y_input, model.y_pred, model.output_class, model.y_mask_input,
                                    name='pred_mean_iou')
     accuracy = tf.metrics.accuracy(model.y_input, model.y_pred, model.y_mask_input, name='pred_accuracy')
     if dump_home:
@@ -211,3 +228,4 @@ def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
         accuracy, mean_iou = sess.run([mean_iou[0], accuracy[0]])
         logger.info('prediction accuracy: {}\nprediction mean IoU: {}'.format(accuracy, mean_iou))
     return res, accuracy, mean_iou
+
