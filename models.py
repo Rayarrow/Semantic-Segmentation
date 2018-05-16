@@ -142,6 +142,7 @@ class FCN():
         """
 
         self.front = front_end
+        self.ignore = ignore
         self.X_input = self.front.X_input
 
         get_conv = self.front.cc.get_conv
@@ -153,7 +154,7 @@ class FCN():
 
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
         if ignore:
-            self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
+            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
 
         # Overwrite `y_input` of the FCN network.
         self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
@@ -256,7 +257,7 @@ class PSPNet():
         elif image_height == 713:
             ps = [90, 45, 30, 15]
         else:
-            raise Exception('Invalid input image shape.')
+            raise Exception('Invalid input image shape. Resize the imput shape to 473 or 713.')
 
         self.PSP_pool1 = avg_pooling('PSP_pool1', self.front.pool5, (ps[0], ps[0]), (ps[0], ps[0]))
         self.PSP_pool2 = avg_pooling('PSP_pool2', self.front.pool5, (ps[1], ps[1]), (ps[1], ps[1]))

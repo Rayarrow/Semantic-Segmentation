@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from config import *
 
-colormap_label = [
+VOC_colormap_label = [
     [[0, 0, 0], 'background'],  # 0
     [[128, 0, 0], 'aero plane'],  # 1
     [[0, 128, 0], 'bicycle'],  # 2
@@ -31,8 +31,7 @@ colormap_label = [
     [[224, 224, 192], 'void'],  # 21
 ]
 
-VOC_palette, VOC_label = zip(*colormap_label)
-VOC_labels = []
+VOC_palette, VOC_label = zip(*VOC_colormap_label)
 
 minhou_palette = [[0, 0, 0],
                   [100, 160, 0],

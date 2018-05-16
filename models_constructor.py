@@ -16,7 +16,8 @@ class component_constructor():
         self.weights_idx = weights_idx
         self.bias_idx = bias_idx
         self.bn_idx = bn_idx
-        self.weight_regularizer = tf.contrib.layers.l2_regularizer(weight_decay) if weight_decay else None
+        self.weight_regularizer = tf.contrib.layers.l2_regularizer(
+            weight_decay) if weight_decay and weight_decay != 0 else None
         self.beta_regularizer = tf.contrib.layers.l2_regularizer(beta_decay) if beta_decay else None
         self.gamma_regularizer = tf.contrib.layers.l2_regularizer(gamma_decay) if gamma_decay else None
 
@@ -58,7 +59,7 @@ class component_constructor():
                        pooling=None, atrous=False, rates=None):
         # the default block strides.
         block_strides = [[[1, 1, 1, 1] for _ in range(nr_layers)] for _ in range(nr_blocks)]
-        # change the stride of the first layer of the first block.
+        # change the stride of the second layer of the first block.
         if pooling:
             block_strides[pooling[0]][pooling[1]] = [1, 2, 2, 1]
 

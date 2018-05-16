@@ -1,10 +1,8 @@
-import tensorflow as tf
 import os
 import re
-from os.path import join
-from collections import Iterable
 
 import numpy as np
+import tensorflow as tf
 from skimage import io, transform
 
 from config import *
@@ -33,16 +31,14 @@ def _load_dataset_VOC(data_home, dataset_path, label_path, data_id, label_ignore
     return X, y, y_weights, ids
 
 
-def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, load_val=True, data_set=True,
-             num_train=None, num_val=None):
+def load_VOC(data_home, label_ignored=21, resize_shape=None, resize_adhoc=False, load_train=True, load_val=True,
+             data_set=True, num_train=None, num_val=None):
     # Define the absolute path of the sub directories.
-    resized = False
     dataset_path = join(data_home, 'JPEGImages')
     label_path = join(data_home, 'SegmentationClassLabelImages')
-    if resize_shape:
+    if not resize_adhoc:
         dataset_path += '_{}'.format(resize_shape)
         label_path += '_{}'.format(resize_shape)
-        resized = True
     train_idx_path = r'ImageSets/Segmentation/train.txt'
     val_idx_path = r'ImageSets/Segmentation/val.txt'
 
@@ -64,22 +60,23 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, lo
                                                              label_ignored)
 
     # Resize the images to the specified shape.
-    if not resized and resize_shape:
+    if resize_adhoc and resize_shape:
         if isinstance(resize_shape, int):
             resize_shape = (resize_shape, resize_shape)
         logger.info('cached resized images of the shape you providied do not exist.')
         if load_train:
             X_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_train],
                                dtype=np.uint8)
-            y_train = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_train],
-                               dtype=np.uint8)
+            y_train = np.array(
+                [transform.resize(image, resize_shape, order=0, preserve_range=True) for image in y_train],
+                dtype=np.uint8)
             y_train_mask = np.array(
                 [transform.resize(image, resize_shape, preserve_range=True) for image in y_train_mask], dtype=np.uint8)
 
         if load_val:
             X_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in X_val],
                              dtype=np.uint8)
-            y_val = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val],
+            y_val = np.array([transform.resize(image, resize_shape, order=0, preserve_range=True) for image in y_val],
                              dtype=np.uint8)
             y_val_mask = np.array([transform.resize(image, resize_shape, preserve_range=True) for image in y_val_mask],
                                   dtype=np.uint8)
@@ -89,8 +86,15 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, lo
         return tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids]))), \
                tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids])))
     else:
-        return tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids])), \
-               tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
+        if load_val and load_train:
+            return tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids])), \
+                   tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
+        elif load_train:
+            return tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids]))
+        elif load_val:
+            return tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
+        else:
+            raise Exception('No are is loaded.')
 
 
 def _minhou_cropping_helper(image, label, mask, id, patch_row, patch_col):
@@ -119,7 +123,7 @@ def _minhou_cropping_helper(image, label, mask, id, patch_row, patch_col):
 
 def random_bunch_sampler(images, label, mask, id, nr, sampling_size):
     """
-    Randomly get `nr` sample patches measuring `sampling_size` from each of the images.
+    Randomly get `nr` sample patches of size `sampling_size` from each image.
     """
     X_patches = []
     y_patches = []

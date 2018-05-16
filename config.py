@@ -19,6 +19,7 @@ elif platform.system() == 'Darwin':
     vgg16_npy_path = r'/Volumes/Transcend/Dataset/Models/vgg16.npy'
     res50_npy_path = r'/Volumes/Transcend/Dataset/Models/Resnet50.npy'
     VOC_home = r'/Volumes/Transcend/Dataset/VOCtrainval_11-May-2012/VOCdevkit/VOC2012'
+    summary_home = r'/Volumes/Transcend/summary/SS'
 
 # On the server
 elif platform.system() == 'Linux':
@@ -26,6 +27,7 @@ elif platform.system() == 'Linux':
     vgg16_npy_path = r'/media/mass/dataset/models/vgg16.npy'
     res50_npy_path = r'/media/mass/dataset/models/Resnet50.npy'
     VOC_home = r'/media/mass/dataset/VOC2012'
+    summary_home = r'/home/zxw/summary/SS'
 
 else:
     raise Exception('npy and VOC path not specified.')
@@ -33,3 +35,4 @@ else:
 VOC_image_home = join(VOC_home, 'JPEGImages')
 VOC_colormap_home = join(VOC_home, 'SegmentationClass')
 VOC_label_home = join(VOC_home, 'SegmentationClassLabelImages')
+
