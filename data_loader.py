@@ -3,9 +3,11 @@ import os
 import re
 from os.path import join
 from collections import Iterable
+import random
 
 import numpy as np
 from skimage import io, transform
+from PIL import Image
 
 from config import *
 from palette_conversion import label_2_colormap
@@ -89,8 +91,8 @@ def load_VOC(data_home, label_ignored=21, resize_shape=None, load_train=True, lo
         return tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids]))), \
                tf.data.Dataset.from_tensor_slices(tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids])))
     else:
-        return tuple(map(np.array, [X_train, y_train, y_train_mask, train_ids])), \
-               tuple(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
+        return list(map(np.array, [X_train, y_train, y_train_mask, train_ids])), \
+               list(map(np.array, [X_val, y_val, y_val_mask, val_ids]))
 
 
 def _minhou_cropping_helper(image, label, mask, id, patch_row, patch_col):
@@ -219,3 +221,118 @@ def save_pred_results(palette, labels, ids, output_home):
 
     for each_colormap, each_colormap_id in zip(colormaps, ids):
         io.imsave(join(output_home, each_colormap_id + '.png'), each_colormap)
+
+
+def data_augmentation(img, label, mask, resize_shape, scale = True, flip= True, rotate= True):
+    mask = mask_transform1(mask)
+    img = np.asanyarray(img)
+    label = np.asanyarray(label)
+    mask = np.asanyarray(mask)
+    if flip:
+        img, label, mask = random_flip(img, label, mask)
+    if scale:
+        img, label, mask= random_scale(img, label, mask)
+    #if rotate:
+        #img, label, mask= random_rotate(img, label, mask)
+    mask = mask_transform2(mask)
+    img, label, mask = random_crop_and_pad(img, label, mask, resize_shape)
+    return img, label, mask
+
+def mask_transform1(mask):
+    shape = np.asarray(mask).shape
+    #print(shape)
+    #print(mask)
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            if mask[i][j] == True:
+                mask[i][j] = 1
+            else:
+                mask[i][j] = 0
+    return mask
+
+def mask_transform2(mask):
+    shape = np.asarray(mask).shape
+    for i in range(shape[0]):
+        for j in range(shape[1]):
+            if mask[i][j] == 1:
+                mask[i][j] = True
+            else:
+                mask[i][j] = False
+    return mask
+
+
+
+
+
+def random_scale(img, label, mask):
+    scale1 = random.randint(50,200)/100
+    scale2 = random.randint(50,200)/100
+    new_size = (int(img.shape[0]*scale1), int(img.shape[1]*scale2))
+    img = transform.resize(img, new_size)
+    label = transform.resize(label, new_size)
+    mask = transform.resize(mask, new_size)
+    return img, label, mask
+
+
+def random_flip(img, label, mask):
+    img = np.flip(img, 1)
+    label = np.flip(label, 1)
+    mask = np.flip(mask, 1)
+    return img, label, mask
+
+
+def random_rotate(img, label, mask):
+    image = Image.fromarray(img)
+    label = Image.fromarray(label)
+    mask = Image.fromarray(mask)
+    angle = random.randint(0, 360)
+    image = image.rotate(angle)
+    label = label.rotate(angle)
+    mask = mask.rotate(angle)
+    rotate_image = np.asarray(image)
+    rotate_label = np.asarray(label)
+    rotate_mask = np.asarray(mask)
+    return rotate_image, rotate_label, rotate_mask
+
+
+def random_crop_and_pad(img, label, mask, resize_shape):
+    if img.shape[0]<=resize_shape[0] or img.shape[1]<=resize_shape[1]:
+        pad00, pad01, pad10, pad11 = (0, 0, 0, 0)
+        if img.shape[0]<=resize_shape[0]:
+            pad00 = (resize_shape[0]-img.shape[0])//2
+            pad01 = pad00+1 if pad00!=0 else 0
+        if img.shape[1]<=resize_shape[1]:
+            pad10 = (resize_shape[1]-img.shape[1])//2
+            pad11 = pad10+1 if pad10!=0 else 0
+        img = np.pad(img, ((pad00, pad01), (pad10, pad11),(0,0)), 'constant')
+        label = np.pad(label, ((pad00, pad01), (pad10, pad11)), 'constant')
+        mask = np.pad(mask, ((pad00, pad01), (pad10, pad11)), 'constant')
+    sampling_size = resize_shape
+    nr = 1
+    img, label, mask = random_sampler(img, label, mask, nr, sampling_size)
+    return img, label, mask
+
+
+def random_sampler(image, label, mask, nr, sampling_size):
+    """
+    Randomly get `nr` sample patches from the given image.
+    """
+    X_patche = list()
+    y_patche = list()
+    mask_patche = list()
+    height, width = image.shape[:2]
+    #print(height,'/n', width)
+    top = [0]
+    left = [0]
+    if height > sampling_size[0]:
+        top = np.random.randint(0, height - sampling_size[0], nr)
+    if width > sampling_size[1]:
+        left = np.random.randint(0, width - sampling_size[1], nr)
+    top = top[0] if top!=0 else 0
+    left = left[0] if left!=0 else 0
+    #print(top,left)
+    X_patche.append(image[top: top + sampling_size[0], left:left + sampling_size[1], :])
+    y_patche.append(label[top: top + sampling_size[0], left:left + sampling_size[1]])
+    mask_patche.append(mask[top: top + sampling_size[0], left:left + sampling_size[1]])
+
+    return X_patche, y_patche, mask_patche

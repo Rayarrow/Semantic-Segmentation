@@ -5,7 +5,10 @@ import re
 
 import numpy as np
 import tensorflow as tf
+import random
 from tensorflow.python.framework.errors_impl import OutOfRangeError
+from skimage import transform
+from data_loader import data_augmentation
 
 from config import *
 
@@ -20,6 +23,12 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
     :param epoch_checkpoint: specify the number of epochs to save the model.
     :return:
     """
+    '''
+    print(np.asarray(d_train[0]).shape)
+    print(np.asarray(d_train[1]).shape)
+    print(np.asarray(d_train[2]).shape)
+    print(np.asarray(d_train[3]).shape)
+    '''
 
     with tf.variable_scope('mask'):
         logits_masked = tf.boolean_mask(model.logits, model.y_mask_input, name='logit_mask')
@@ -86,6 +95,8 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
         else:
             last_iter = 1
 
+        #d_train[0], d_train[1], d_train[2] = data_augmentation(d_train[0], d_train[1], d_train[2])
+
         cur_loss = np.inf
         nr_train = len(d_train[0])
         nr_val = len(d_val[0])
@@ -97,6 +108,15 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
             # X_train_next, y_train_next, y_train_mask_next, _ = sess.run(train_it)
             # Get next batch of data.
             next_batch = s_train.choice(batch_size, *d_train[:-1])
+            '''
+            print(len(next_batch[0]))
+            print(next_batch[0][1].shape)
+            print(next_batch[1][1].shape)
+            print(next_batch[2][1].shape)
+            '''
+            resize_shape = (next_batch[0].shape[1], next_batch[0].shape[2])
+            #for i in range(len(next_batch[0])):
+                #d_train[:-1][i] = data_augmentation(d_train[0][i], d_train[1][i], d_train[2][i], resize_shape)
             fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
             if model.ignore:
                 fd[model.y_mask_input] = next_batch[2]
@@ -211,3 +231,4 @@ def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
         accuracy, mean_iou = sess.run([mean_iou[0], accuracy[0]])
         logger.info('prediction accuracy: {}\nprediction mean IoU: {}'.format(accuracy, mean_iou))
     return res, accuracy, mean_iou
+
