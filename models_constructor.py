@@ -2,6 +2,8 @@ import numpy as np
 import tensorflow as tf
 
 from config import *
+from deform_conv import *
+from msra_initializer import *
 
 UPSAMPLE_BILINEAR = 'bilinear'
 UPSAMPLE_DECONV = 'deconv'
@@ -26,9 +28,11 @@ class component_constructor():
         num_input = bottom.get_shape().as_list()[-1]
         with tf.variable_scope(name):
             # Load pretrained weights if they exist.
-            W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else None
-            W_shape = self.weights_dict[name][self.weights_idx].shape if pretrained else list(k_size) + [num_input,
-                                                                                                         num_output]
+            #W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
+            W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else msra_initializer()
+            W_shape = self.weights_dict[name][self.weights_idx].shape if pretrained else list(k_size) + [num_input,num_output]
+            
+            strides = atrous if atrous else strides                                                                                             
             W = tf.get_variable('W', shape=W_shape, dtype=tf.float32, initializer=W_init,
                                 regularizer=self.weight_regularizer)
             conv_op = tf.nn.atrous_conv2d if atrous else tf.nn.conv2d
@@ -36,7 +40,8 @@ class component_constructor():
             conv = conv_op(bottom, W, strides, padding='SAME', name=conv_name)
 
             if bias:
-                b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else None
+                #b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
+                b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else msra_initializer()
                 b_shape = self.weights_dict[name][self.bias_idx].shape if pretrained else num_output
                 b = tf.get_variable('b', shape=b_shape, dtype=tf.float32, initializer=b_init)
                 conv = conv + b
@@ -53,7 +58,7 @@ class component_constructor():
                                                gamma_regularizer=self.gamma_regularizer) if pretrained else tf.layers.batch_normalization(
                 bottom, beta_regularizer=self.beta_regularizer, gamma_regularizer=self.gamma_regularizer)
             return tf.nn.relu(bn) if relu else bn
-
+    '''
     def get_bottleneck(self, bottom, block_idx, nr_blocks, nr_layers=3, conv_pretrained=True, bn_pretrained=True,
                        pooling=None, atrous=False, rates=None):
         # the default block strides.
@@ -95,6 +100,83 @@ class component_constructor():
             bottom = self.add_relu(bn_skip, bottom, 'fuse{}{}'.format(block_idx, chr(97 + block)))
             bn_skip = bottom
         return bottom
+    '''
+
+    def get_bottleneck(self, bottom, block_idx, nr_blocks, nr_layers=3, conv_pretrained=True, bn_pretrained=True,
+                       pooling=None, atrous=False, rates=None, deformable=False):
+        # the default block strides.
+        block_strides = [[[1, 1, 1, 1] for _ in range(nr_layers)] for _ in range(nr_blocks)]
+        # change the stride of the first layer of the first block.
+        if pooling:
+            block_strides[pooling[0]][pooling[1]] = [1, 2, 2, 1]
+
+        if atrous:
+            if not rates:
+                raise Exception('for atrous convolution, `rates` must be specified.')
+            # Only the middle 3*3 conv layer can perform atrous convolution.
+            atrous = [[False, True, False]] * nr_blocks
+
+            # If the input `rates` is an integer, then all the rates of every block are `rates`.
+            if isinstance(rates, int):
+                rates = [rates] * nr_blocks
+            # Note that under atrous convolution conditions, the middle element in each nested list within
+            # `block_stride` # is the rate (an integer) for the atrous convolution instead of the actual strides
+            # (a list) for standard the convolution.
+            for idx, each_rate in enumerate(rates):
+                block_strides[idx][1] = each_rate
+
+            if len(rates) != 1:
+                atrous = []
+                for i in range(len(rates)):
+                    atrous += [[False, rates[i], False]]
+
+        else:
+            atrous = [[False, False, False]] * nr_blocks
+
+        res_pattern = 'res{}{}_branch{}{}'
+        bn_pattern = 'bn{}{}_branch{}{}'
+        deform_pattern = 'deform{}{}_branch{}{}'
+        conv1_pattern = 'conv1{}{}_branch{}{}'
+        conv2_pattern = 'conv2{}{}_branch{}{}'
+
+        deform = [False, False, True]
+        relu = [False, False, True]
+
+        skip_stride = (1, 2, 2, 1) if pooling else (1, 1, 1, 1)
+        res_skip = self.get_conv(res_pattern.format(block_idx, 'a', 1, ''), bottom, strides=skip_stride)
+        bn_skip = self.get_bn(bn_pattern.format(block_idx, 'a', 1, ''), res_skip)
+
+        '''
+        for block in range(nr_blocks):
+            for layer in range(nr_layers):
+                bottom = self.get_conv(res_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
+                                       bottom,conv_pretrained, relu=relu[layer],  strides=block_strides[block][layer],
+                                       atrous=atrous[block][layer])
+                if deformable and deform[layer]:
+                    bottom = self.deformable_conv(bottom, deform_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)))
+                bottom = self.get_bn(bn_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), bottom,
+                                     bn_pretrained)
+            bottom = self.add_relu(bn_skip, bottom, 'fuse{}{}'.format(block_idx, chr(97 + block)))
+            bn_skip = bottom       
+            '''
+        for block in range(nr_blocks):
+            for layer in range(nr_layers):
+                bottom = self.get_conv(res_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
+                                       bottom, conv_pretrained, strides=block_strides[block][layer],
+                                       atrous=atrous[block][layer])
+                bottom = self.get_bn(bn_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), bottom,
+                                     bn_pretrained)
+                if deformable and deform[layer]:
+                    kernel_num = bottom.shape[3]
+                    debottom = self.get_conv(conv1_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), bottom, pretrained=False, num_output = 512)
+                    debottom = self.deformable_conv(debottom, deform_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)))
+                    concatebottom = tf.concat((bottom, debottom), 3)
+                    bottom = self.get_conv(conv2_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), concatebottom, pretrained=False, num_output = kernel_num)
+            bottom = self.add_relu(bn_skip, bottom, 'fuse{}{}'.format(block_idx, chr(97 + block)))
+            bn_skip = bottom
+            
+        return bottom
+
 
     def add_relu(self, x, y, name=None):
         with tf.variable_scope(name):
@@ -224,3 +306,116 @@ class component_constructor():
 
     def lateral_conv(self, bottom, output_channel=0, name='lateral_conv'):
         return self.get_conv(name, bottom, False, False, True, num_output=output_channel)
+
+    def get_variance(self, bottom, name, axis = [1,2], keep_dims = False):
+        with tf.variable_scope(name):
+            mean, variance = tf.nn.moments(bottom, axis, keep_dims, name = 'variance')
+        return variance
+
+    def get_variance_for_all(self, name, bottom, ksize=(1, 1), num_output = 256):
+        get_variance = self.get_variance
+        upsample = self.bilinear
+        get_conv = self.get_conv
+        get_bn = self.get_bn
+        print(bottom.shape)
+        origin_size = (bottom.shape[1], bottom.shape[2])
+
+        with tf.variable_scope(name):
+            if ksize == origin_size:
+                self.variance = get_variance(bottom, name = 'anameaa')
+                print(self.variance.shape)
+                self.variance = tf.expand_dims(tf.expand_dims(self.variance, 1), 1)
+                self.variance = upsample('v_pooling_upsample', self.variance, output_shape = ksize)
+                self.variance = get_conv('vconv', self.variance, pretrained = False, num_output = num_output)
+                self.variance = get_bn('vbn', self.variance, pretrained = False, relu = False)
+                return self.variance
+            else:
+                self.split1 = tf.split(bottom, [ksize[0] for i in range(origin_size[0]//ksize[0])], 1)
+                print(np.asarray(self.split1).shape)
+                print(self.split1)
+                split_sizey = [ksize[1] for i in range(origin_size[1]//ksize[1])]
+                self.split2 = []
+                for i in range(np.asarray(self.split1).shape[0]):
+                    self.split2.append(tf.split(self.split1[0], split_sizey, 2))
+                    print(self.split2[i])
+                print(self.split2[1][1])
+                print(np.asarray(self.split2).shape)
+
+                self.variance = []
+                v_pattern = '{}{}'
+                numx = origin_size[0]//ksize[0]
+                # self.variance = np.ones((numx, numx))
+                for i in range(np.asarray(self.split2).shape[0]):
+                    for j in range(np.asarray(self.split2).shape[1]):
+                        self.variance.append(tf.expand_dims(tf.expand_dims(get_variance(tf.to_float(self.split2[i][j]), axis=[1, 2], name='variance_'),1), 1))
+                        print(self.variance[i * np.asarray(self.split2).shape[0] + j].shape)
+                        self.variance[i * np.asarray(self.split2).shape[0] + j] = upsample(
+                            bottom=self.variance[i * np.asarray(self.split2).shape[0] + j],name=v_pattern.format('variance', chr(97 + i)), factor=1, output_shape=ksize)
+                        print(self.variance[i * np.asarray(self.split2).shape[0] + j].shape)
+                self.variance = np.reshape(self.variance, (numx, numx))
+                print(self.variance.shape)
+                self.v_concat = []
+                for i in range(numx):
+                    self.v_concat.append(self.variance[i][0])
+                self.v_concat = np.reshape(self.v_concat, (1,numx))
+                for i in range(self.v_concat.shape[1]):
+                    for j in range(1, numx):
+                        self.v_concat[0][i] = tf.concat([self.v_concat[0][i], self.variance[i][j]], 2, 'aname')
+
+                self.concat = self.v_concat[0][0]
+                for i in range(1, numx):
+                    self.concat = tf.concat([self.concat, self.v_concat[0][i]], 1, 'conv2')
+                self.concat = get_conv('vconv', self.concat, pretrained=False, num_output=num_output)
+                self.concat = get_bn('vbn', self.concat, pretrained=False, relu=False)
+                print(self.concat.shape)
+                return self.concat
+
+    def deformable_conv(self, bottom, name):
+        input_shape = bottom.shape
+        with tf.variable_scope(name):
+            offsets = self.get_conv('offset_field', bottom, pretrained=False, num_output=input_shape[3]*2)
+            # offsets: (b*c, h, w, 2)
+            offsets = self._to_bc_h_w_2(offsets, input_shape)
+
+            # x: (b*c, h, w)
+            x = self._to_bc_h_w(bottom, input_shape)
+
+            # X_offset: (b*c, h, w)
+            x_offset = tf_batch_map_offsets(x, offsets)
+
+            # x_offset: (b, h, w, c)
+            x_offset = self._to_b_h_w_c(x_offset, input_shape)
+            x_output = self.get_conv('deformable_conv', x_offset, pretrained=False, num_output=input_shape[3])
+            return x_output
+
+
+    def compute_output_shape(self, input_shape):
+        """Output shape is the same as input shape
+
+        Because this layer does only the deformation part
+        """
+        return input_shape
+
+    @staticmethod
+    def _to_bc_h_w_2(x, x_shape):
+        """(b, h, w, 2c) -> (b*c, h, w, 2)"""
+        x = tf.transpose(x, [0, 3, 1, 2])
+        x = tf.reshape(x, (-1, int(x_shape[1]), int(x_shape[2]), 2))
+        return x
+
+    @staticmethod
+    def _to_bc_h_w(x, x_shape):
+        """(b, h, w, c) -> (b*c, h, w)"""
+        x = tf.transpose(x, [0, 3, 1, 2])
+        x = tf.reshape(x, (-1, int(x_shape[1]), int(x_shape[2])))
+        return x
+
+    @staticmethod
+    def _to_b_h_w_c(x, x_shape):
+        """(b*c, h, w) -> (b, h, w, c)"""
+        x = tf.reshape(
+            x, (-1, int(x_shape[3]), int(x_shape[1]), int(x_shape[2]))
+        )
+        x = tf.transpose(x, [0, 2, 3, 1])
+        return x
+
