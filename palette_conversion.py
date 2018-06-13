@@ -3,7 +3,6 @@ import os
 import numpy as np
 from skimage import io
 from tqdm import tqdm
-
 from config import *
 
 VOC_colormap_label = [
@@ -27,9 +26,8 @@ VOC_colormap_label = [
     [[128, 64, 0], 'sheep'],  # 17
     [[0, 192, 0], 'sofa'],  # 18
     [[128, 192, 0], 'train'],  # 19
-    [[0, 64, 128], 'tv/monitor'],  # 20
-    [[224, 224, 192], 'void'],  # 21
-]
+    [[0, 64, 128], 'tv/monitor']  # 20
+] + [[0, 'none']] * (256-22) + [[[224, 224, 192], 'void']]
 
 VOC_palette, VOC_label = zip(*VOC_colormap_label)
 
@@ -44,6 +42,13 @@ minhou_palette = [[0, 0, 0],
                   [245, 185, 122],
                   [150, 220, 240],
                   [255, 255, 190]]
+
+ISPRS_palette = [[255, 255, 255],
+                 [0, 0, 255],
+                 [0, 255, 255],
+                 [0, 255, 0],
+                 [255, 255, 0],
+                 [255, 0, 0]]
 
 
 # This function converts from segmentation class colormap images to labeled images.
@@ -67,10 +72,11 @@ def colormap_2_label(palette, colormap_home):
         io.imsave(join(label_home, each_colormap_image_name), cur_label_image)
 
 
-def label_2_colormap(palette, labels):
+def label_2_colormap(palette, labels, ignore_label=255):
     colormaps = []
     for idx, each_label in enumerate(labels):
-        if idx % 100 == 0:
+        tick = len(labels) // 100 + 1
+        if idx % tick == 0:
             logger.info('label to colormap {} / {}'.format(idx + 1, len(labels)))
 
         this_colormap = np.zeros((each_label.shape[0], each_label.shape[1], 3))
@@ -78,6 +84,6 @@ def label_2_colormap(palette, labels):
             for j in range(each_label.shape[1]):
                 this_colormap[i, j] = palette[each_label[i, j]]
 
-        colormaps.append(this_colormap.astype(int))
+        colormaps.append(this_colormap.astype('uint8'))
 
     return colormaps

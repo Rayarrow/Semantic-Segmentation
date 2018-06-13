@@ -5,10 +5,6 @@ import re
 
 import numpy as np
 import tensorflow as tf
-import random
-from tensorflow.python.framework.errors_impl import OutOfRangeError
-from skimage import transform
-from data_loader import tf_da
 
 from config import *
 
@@ -24,17 +20,14 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
     :return:
     """
 
-
     logits = tf.reshape(model.logits, [-1, model.num_classes])
-    raw_gt = tf.reshape(model.y_input_da, [-1, ])
+    raw_gt = tf.reshape(model.y_input, [-1, ])
     raw_pred = tf.reshape(model.y_pred, [-1, ])
 
     indices = tf.where(tf.less_equal(raw_gt, model.num_classes - 1))
     labels_masked = tf.cast(tf.gather(raw_gt, indices), tf.int32)
     logits_masked = tf.gather(logits, indices)
     pred_masked = tf.cast(tf.gather(raw_pred, indices), tf.int32)
-
-
 
     # define metrics
     with tf.variable_scope('metrics'):
@@ -44,7 +37,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
         train_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='train_meaniou')
         val_meaniou = tf.metrics.mean_iou(labels_masked, pred_masked, model.num_classes, name='val_meaniou')
 
-    #print('mask checked')
+    # print('mask checked')
 
     # inspect checkpoint home and summary home in case they do not exist.
     ckpt_home = join(dump_home, 'checkpoint')
@@ -68,7 +61,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
     if lr_decay == 'poly':
         learning_rate = tf.train.polynomial_decay(learning_rate, global_step, nr_iter, power=0.9)
     trainer = tf.train.AdamOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
-    #trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
+    # trainer = tf.train.MomentumOptimizer(learning_rate, momentum).minimize(total_loss, global_step)
 
     # summary
     loss_summary = tf.summary.scalar('loss', total_loss)
@@ -99,7 +92,6 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
         else:
             last_iter = 1
 
-
         cur_loss = np.inf
         nr_train = len(d_train[0])
         nr_val = len(d_val[0])
@@ -111,11 +103,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
             # Get next batch of data.
             next_batch = s_train.choice(batch_size, *d_train[:-1])
 
-
-
-
             fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
-
 
             cur_loss, _, _, _ = sess.run([total_loss, trainer, train_accuracy[1], train_meaniou[1]], feed_dict=fd)
 
@@ -136,7 +124,7 @@ def commission_training_task(model, dump_home, d_train, d_val, learning_rate, lr
             if iteration % val_iter_interval == 0:
                 logger.info('Reach iteration {} and start validating...'.format(iteration))
 
-                for i in range(int(np.ceil(nr_val/batch_size))):
+                for i in range(int(np.ceil(nr_val / batch_size))):
                     next_batch = s_val.next_batch(batch_size, i, *d_val[:-1])
                     fd = {model.X_input: next_batch[0], model.y_input: next_batch[1]}
                     if model.ignore:
@@ -178,7 +166,6 @@ class shuffler():
 
         return res
 
-
     def choice(self, batch_size, *args):
         res = []
         idx = np.random.choice(self.random_idx, batch_size, False)
@@ -189,8 +176,6 @@ class shuffler():
                 raise Exception('to be implemented')
 
         return res
-
-
 
 
 def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
@@ -228,4 +213,3 @@ def commission_predict(model, model_epoch, dump_home, X, y, mask, batch_size=1):
         accuracy, mean_iou = sess.run([mean_iou[0], accuracy[0]])
         logger.info('prediction accuracy: {}\nprediction mean IoU: {}'.format(accuracy, mean_iou))
     return res, accuracy, mean_iou
-

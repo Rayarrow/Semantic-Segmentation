@@ -1,5 +1,6 @@
+from data_loader import *
+from data_preprocess import mean_substract
 from models_constructor import *
-from data_loader import tf_da 
 
 
 # Not used for now.
@@ -15,25 +16,24 @@ def get_ele(model, upsample_mode):
 
     return get_conv, upsample
 
+
 class VGG16():
-    def __init__(self, image_height, image_width, image_channel=3, get_FCN=0):
+    def __init__(self, X_input, y_input, image_height, image_width, get_FCN=0):
         self.cc = component_constructor(vgg16_npy_path, 0, 1)
         get_conv = self.cc.get_conv
         get_maxpooling = self.cc.get_maxpooling
         get_fc = self.cc.get_fc
         self.image_height = image_height
         self.image_width = image_width
+        self.X_input = X_input
+        self.y_input = y_input
 
         # Declare the mean of each channel in "(b, g, r)" order, which is gotten from ImageNet dataset.
         with tf.variable_scope('input'):
-            self.channel_mean = tf.constant([103.939, 116.779, 123.68], dtype=tf.float32, shape=[3], name='mean')
-            self.X_input = tf.placeholder(tf.float32, [None, image_height, image_width, image_channel], 'X_input')
-            self.y_input = tf.placeholder(tf.int32, [None], name='y_input')
+            X_input = tf.cast(X_input, tf.float32)
+            X_input = mean_substract(X_input)
 
-            r, g, b = tf.split(self.X_input, 3, axis=3, name='rgb_spliter')
-            self.X_input_transformed = tf.concat([b, g, r], axis=3) - self.channel_mean
-
-        self.conv1_1 = get_conv('conv1_1', self.X_input_transformed, True, True, True)
+        self.conv1_1 = get_conv('conv1_1', X_input, True, True, True)
         self.conv1_2 = get_conv('conv1_2', self.conv1_1, True, True, True)
         self.maxpool_1 = get_maxpooling('maxpool_1', self.conv1_2)
 
@@ -68,7 +68,7 @@ class VGG16():
             self.fc7 = get_fc('fc7', self.fc6)
             self.fc8 = get_fc('fc8', self.fc7)
             self.y_pred = tf.argmax(self.fc8, axis=1)
-            self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(self.y_input, self.fc8)
+            self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(y_input, self.fc8)
 
         elif get_FCN == 1:
             self.fcn6 = self.cc.get_fully_as_CNN('fc6', self.maxpool_5, [7, 7, 512, 4096])
@@ -89,10 +89,10 @@ class VGG16():
 
 
 class ResNet50():
-    def __init__(self, image_height, image_width, image_channel=3, get_FCN=False, weight_decay=None, beta_decay=None,
-                 gamma_decay=None, rates=(2, 4), if_da=True, if_deformable=True):
-        self.cc = component_constructor(res50_npy_path, weight_decay=weight_decay, beta_decay=beta_decay,
-                                        gamma_decay=gamma_decay)
+    def __init__(self, X_input, y_input, image_height, image_width, get_FCN=False, rates=(2, 4)):
+        self.cc = component_constructor(res50_npy_path)
+        self.X_input = X_input
+        self.y_input = y_input
         self.image_height = image_height
         self.image_width = image_width
 
@@ -102,21 +102,12 @@ class ResNet50():
         get_fc = self.cc.get_fc
         get_bottleneck = self.cc.get_bottleneck
 
-        with tf.variable_scope("input"):
-            self.channel_mean = tf.constant([103.939, 116.779, 123.68], dtype=tf.float32, shape=[3])
-            self.X_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width, image_channel])
-            self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
+        with tf.variable_scope('input'):
+            X_input = tf.cast(X_input, tf.float32)
+            X_input = mean_substract(X_input)
 
-            r, g, b = tf.split(self.X_input, 3, axis=3)
-            self.X_input_transformed = tf.concat([b, g, r], axis=3) - self.channel_mean
-            if if_da:
-                self.X_input_da, self.y_input_da = tf_da(self.X_input_transformed, self.y_input, (image_height, image_width))
-            else:
-                self.X_input_da, self.y_input_da = self.X_input_transformed, self.y_input
-
-        # conv1
         with tf.variable_scope('block1'):
-            self.conv1 = get_conv('conv1', self.X_input_da, strides=[1, 2, 2, 1])
+            self.conv1 = get_conv('conv1', X_input, strides=[1, 2, 2, 1])
             self.bn1 = get_bn('bn_conv1', self.conv1)
             self.pool1 = get_maxpooling('pool1', self.bn1, [3, 3])
 
@@ -125,45 +116,37 @@ class ResNet50():
 
         with tf.variable_scope('block3'):
             self.pool3 = get_bottleneck(self.pool2, 3, 4, 3, pooling=(0, 1))
-        with tf.variable_scope('block3skip'):
-            self.skip = get_bottleneck(self.pool2, 3, 4, 3, conv_pretrained=False, bn_pretrained=False)
 
         with tf.variable_scope('block4'):
             self.pool4 = get_bottleneck(self.pool3, 4, 6, 3, atrous=True, rates=rates[0])
 
         with tf.variable_scope('block5'):
-            #self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous=True, rates=rates[1])
-            self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous = True, rates = [2,4,8], deformable=if_deformable)
+            self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous=True, rates=rates[1])
+            # self.pool5 = get_bottleneck(self.pool4, 5, 3, 3, atrous=True, rates=[2, 4, 8])
 
         if not get_FCN:
             self.global_pooling = tf.reduce_mean(self.pool5, axis=[1, 2])
             self.fc1000 = get_fc('fc1000', self.global_pooling)
             self.y_pred = tf.argmax(self.fc1000, axis=-1, output_type=tf.int32, name='y_pred')
 
+
 class FCN():
-    def __init__(self, front_end, stride, num_classes, ignore=True):
+    def __init__(self, front_end, stride, num_classes):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
         self.front = front_end
-        self.ignore = ignore
-        self.X_input = self.front.X_input
 
         get_conv = self.front.cc.get_conv
         upsample = self.front.cc.get_deconv
 
         self.num_classes = num_classes
-        image_height = self.front.image_height
-        image_width = self.front.image_width
+        self.X_input = self.front.X_input
+        self.y_input = self.front.y_input
 
         # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
-
-        # Overwrite `y_input` of the FCN network.
-        self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
 
         # The final output shape of the network, used to determine the output shape of the transpose convolution
         # (deconvolution) layer.
@@ -223,15 +206,13 @@ class FCN():
 
 
 class PSPNet():
-    def __init__(self, front_end, num_classes, ignore=True):
+    def __init__(self, front_end, num_classes):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
         """
 
         self.front = front_end
-        self.X_input = self.front.X_input
-        self.ignore = ignore
 
         get_conv = self.front.cc.get_conv
         get_bn = self.front.cc.get_bn
@@ -243,14 +224,6 @@ class PSPNet():
         image_height = front_end.image_height
         image_width = front_end.image_width
 
-
-        # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
-
-        # Overwrite `y_input` of the original classification network.
-        self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
-
         # The final output shape of the network, used to determine the output shape of the transpose convolution
         # (deconvolution) layer.
         self.input_shape = tf.shape(self.front.X_input, name='shape_input')
@@ -258,6 +231,7 @@ class PSPNet():
                                      name='shape_output')
 
         # "ps" stands for "pyramid strides".
+        logger.info(f'Image shape: {(image_height, image_width)}')
         if image_height == 473:
             ps = [60, 30, 20, 10]
         elif image_height == 713:
@@ -295,11 +269,12 @@ class PSPNet():
                                    num_output=num_classes)
             self.logits = upsample('logits', self.reduce, output_shape=(image_height, image_width))
 
+        self.y_prob = tf.nn.softmax(self.logits)
         self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
 
 
 class Deeplabv2():
-    def __init__(self, front_end, num_classes, ignore=True):
+    def __init__(self, front_end, num_classes):
         """
         :param stride: specify the stride of the FCN network (FCN#{stride}s).
         :param ignore: If there exists at least one label (class) to be ignored when calculating the loss.
@@ -307,7 +282,6 @@ class Deeplabv2():
 
         self.front = front_end
         self.num_classes = num_classes
-        self.ignore = ignore
         self.X_input = self.front.X_input
         self.input_shape = tf.shape(self.X_input)
 
@@ -317,15 +291,6 @@ class Deeplabv2():
         self.num_classes = num_classes
         image_height = self.front.image_height
         image_width = self.front.image_width
-
-        # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.float32, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-
-        # Overwrite `y_input` of the original classification network.
-        self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
 
         # The final output shape of the network, used to determine the output shape of the transpose convolution
         # (deconvolution) layer.
@@ -343,6 +308,7 @@ class Deeplabv2():
         self.logits = upsample('logits', self.EXP, output_shape=self.input_shape[1:3])
 
         self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
+
 
 # class FPN():
 #     def __init__(self, front_name, num_classes, image_height=None, image_width=None, image_channel=3, ignore=True,
@@ -406,16 +372,11 @@ class Deeplabv2():
 #         self.y_pred = tf.argmax(self.score, axis=-1, output_type=tf.int32, name='y_pred')
 
 
-
 class deeplab_v3():
-    def __init__(self, front_end, num_classes, ignore = True):
-
+    def __init__(self, front_end, num_classes):
         self.front = front_end
         self.X_input = self.front.X_input
         self.y_input = self.front.y_input
-        self.X_input_da = self.front.X_input_da
-        self.y_input_da = self.front.y_input_da
-        self.ignore = ignore
 
         get_conv = self.front.cc.get_conv
         upsample = self.front.cc.bilinear
@@ -427,65 +388,49 @@ class deeplab_v3():
 
         self.num_classes = num_classes
 
-        # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-        else:
-            self.y_mask_input = 1.0
-
-        # Overwrite `y_input` of the FCN network.
-        #self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
-
         # The final output shape of the network, used to determine the output shape of the transpose convolution
         # (deconvolution) layer.
         self.input_shape = tf.shape(self.front.X_input, name='shape_input')
         self.output_shape = tf.stack([self.input_shape[0], self.input_shape[1], self.input_shape[2], num_classes],
                                      name='shape_output')
-        #global_average_pooling
+        # global_average_pooling
         with tf.variable_scope('ASPP'):
-            self.fc_image_pooling = avg_pooling('image_pooling', self.front.pool5, (60, 60), (60, 60))
-            self.fc_image_pooling = get_conv('image_pooling_conv', self.fc_image_pooling, False, False, False, k_size = [1,1], num_output = 256)
-            self.fc_image_pooling =get_bn('image_pooling_bn',self.fc_image_pooling, pretrained = False)
-            self.fc_image_pooling = upsample('image_pooling_size100', self.fc_image_pooling, 60)
+            # self.fc_image_pooling = avg_pooling('image_pooling', self.front.pool5, (60, 60), (60, 60))
+            self.global_pooling = tf.reduce_mean(self.front.pool5, axis=[1, 2], keepdim=True, name='global_pooling')
+            self.global_pooling = get_conv('global_pooling_conv', self.global_pooling, False, False, False,
+                                           k_size=[1, 1], num_output=256)
+            self.global_pooling = get_bn('global_pooling_bn', self.global_pooling, pretrained=False)
+            self.global_pooling = upsample('global_pooling_upsample', self.global_pooling,
+                                           output_shape=tf.shape(self.front.pool5))
             # ASPP
-            self.fc_c0 = get_conv('fc_c0', self.front.pool5, pretrained = False, k_size=[1, 1], num_output = 256)
-            self.fc_c1 = get_conv('fc_c1', self.front.pool5, pretrained = False, k_size=[3, 3], num_output = 256, atrous = 6)
-            self.fc_c2 = get_conv('fc_c2', self.front.pool5, pretrained = False, k_size=[3, 3], num_output = 256, atrous = 12)
-            self.fc_c3 = get_conv('fc_c3', self.front.pool5, pretrained = False, k_size=[3, 3], num_output = 256, atrous = 18)
-            #BN
-            self.fc_c0 = get_bn('fc_c0_bn', self.fc_c0, pretrained = False)
-            self.fc_c1 = get_bn('fc_c1_bn', self.fc_c1, pretrained = False)
-            self.fc_c2 = get_bn('fc_c2_bn', self.fc_c2, pretrained = False)
-            self.fc_c3 = get_bn('fc_c3_bn', self.fc_c3, pretrained = False)
+            self.ASPP1 = get_conv('ASPP1', self.front.pool5, pretrained=False, k_size=[1, 1], num_output=256)
+            self.ASPP2 = get_conv('ASPP2', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=6)
+            self.ASPP3 = get_conv('ASPP3', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=12)
+            self.ASPP4 = get_conv('ASPP4', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=18)
+            # BN
+            self.ASPP1 = get_bn('ASPP1_bn', self.ASPP1, pretrained=False)
+            self.ASPP2 = get_bn('ASPP2_bn', self.ASPP2, pretrained=False)
+            self.ASPP3 = get_bn('ASPP3_bn', self.ASPP3, pretrained=False)
+            self.ASPP4 = get_bn('ASPP4_bn', self.ASPP4, pretrained=False)
 
-        with tf.variable_scope('concate'):
+        with tf.variable_scope('concatenation'):
             # concate
-            self.fc = tf.concat((self.fc_c0, self.fc_c1), 3)
-            self.fc = tf.concat((self.fc, self.fc_c2), 3)
-            self.fc = tf.concat((self.fc, self.fc_c3), 3)
-            self.fc = tf.concat((self.fc, self.fc_image_pooling), 3)
-            #self.fc = tf.concat((self.fc, self.front.pool5), 3)
+            self.ASPP_concat = tf.concat([self.ASPP1, self.ASPP2, self.ASPP3, self.ASPP4, self.global_pooling], 3)
             # 1*1 conv
-            self.reduce = get_conv('reduce', self.fc, pretrained=False, bias=False, k_size=[1, 1],
-                               num_output = num_classes)
-            # upsample
-            self.logits = upsample('score', self.reduce, output_shape = self.input_shape[1:3])
+        self.reduce = get_conv('final_reduce', self.ASPP_concat, pretrained=False, bias=False, k_size=[1, 1],
+                               num_output=num_classes)
+        # upsample
+        self.logits = upsample('logits', self.reduce, output_shape=self.input_shape[1:3])
 
         self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
-        #self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.logits, weights=self.y_mask_input)
-    
+        # self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.logits, weights=self.y_mask_input)
+
 
 class deeplab_v3_plus():
-    def __init__(self, front_end, num_classes, ignore=True):
-
+    def __init__(self, front_end, num_classes):
         self.front = front_end
         self.X_input = self.front.X_input
         self.y_input = self.front.y_input
-        self.X_input_da = self.front.X_input_da
-        self.y_input_da = self.front.y_input_da
-        self.ignore = ignore
 
         get_conv = self.front.cc.get_conv
         upsample = self.front.cc.bilinear
@@ -497,61 +442,57 @@ class deeplab_v3_plus():
 
         self.num_classes = num_classes
 
-        # If there exists at least one label to be ignored, the masks for each image with identical shape are required.
-        if ignore:
-            self.y_mask_input = tf.placeholder(tf.bool, shape=[None, image_height, image_width], name='y_mask_input')
-        # `1.0` is the default parameter for `tf.losses.sparse_softmax_cross_entropy()`, indicating that no labels are
-        # ignored.
-        else:
-            self.y_mask_input = 1.0
-
-        # Overwrite `y_input` of the FCN network.
-        #self.y_input = tf.placeholder(tf.int32, shape=[None, None, None], name='y_input')
-
-
         # The final output shape of the network, used to determine the output shape of the transpose convolution
         # (deconvolution) layer.
         self.input_shape = tf.shape(self.front.X_input, name='shape_input')
         self.output_shape = tf.stack([self.input_shape[0], self.input_shape[1], self.input_shape[2], num_classes],
                                      name='shape_output')
-
 
         # global_average_pooling
         with tf.variable_scope('ASPP'):
-            self.fc_image_pooling = avg_pooling('image_pooling', self.front.pool5, (75, 75), (75, 75))
-            self.fc_image_pooling = get_conv('image_pooling_conv', self.fc_image_pooling, False, False, False,
-                                             k_size=[1, 1], num_output=256)
-            self.fc_image_pooling = get_bn('image_pooling_bn', self.fc_image_pooling, pretrained=False)
-            self.fc_image_pooling = upsample('image_pooling_size60', self.fc_image_pooling, 75)
+            # self.fc_image_pooling = avg_pooling('image_pooling', self.front.pool5, (60, 60), (60, 60))
+            self.global_pooling = tf.reduce_mean(self.front.pool5, axis=[1, 2], keepdim=True, name='global_pooling')
+            self.global_pooling = get_conv('global_pooling_conv', self.global_pooling, False, False, False,
+                                           k_size=[1, 1], num_output=256)
+            self.global_pooling = get_bn('global_pooling_bn', self.global_pooling, pretrained=False)
+            self.global_pooling = upsample('global_pooling_upsample', self.global_pooling,
+                                           output_shape=tf.shape(self.front.pool5))
             # ASPP
-            self.fc_c0 = get_conv('fc_c0', self.front.pool5, pretrained=False, k_size=[1, 1], num_output=256)
-            self.fc_c1 = get_conv('fc_c1', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=6)
-            self.fc_c2 = get_conv('fc_c2', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=12)
-            self.fc_c3 = get_conv('fc_c3', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=18)
+            self.ASPP1 = get_conv('ASPP1', self.front.pool5, pretrained=False, k_size=[1, 1], num_output=256)
+            self.ASPP2 = get_conv('ASPP2', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=6)
+            self.ASPP3 = get_conv('ASPP3', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=12)
+            self.ASPP4 = get_conv('ASPP4', self.front.pool5, pretrained=False, k_size=[3, 3], num_output=256, atrous=18)
             # BN
-            self.fc_c0 = get_bn('fc_c0_bn', self.fc_c0, pretrained=False)
-            self.fc_c1 = get_bn('fc_c1_bn', self.fc_c1, pretrained=False)
-            self.fc_c2 = get_bn('fc_c2_bn', self.fc_c2, pretrained=False)
-            self.fc_c3 = get_bn('fc_c3_bn', self.fc_c3, pretrained=False)
+            self.ASPP1 = get_bn('ASPP1_bn', self.ASPP1, pretrained=False)
+            self.ASPP2 = get_bn('ASPP2_bn', self.ASPP2, pretrained=False)
+            self.ASPP3 = get_bn('ASPP3_bn', self.ASPP3, pretrained=False)
+            self.ASPP4 = get_bn('ASPP4_bn', self.ASPP4, pretrained=False)
+
+        with tf.variable_scope('concatenation'):
+            # concate
+            self.ASPP_concat = tf.concat([self.ASPP1, self.ASPP2, self.ASPP3, self.ASPP4, self.global_pooling], 3)
+            # 1*1 conv
+        self.reduce = get_conv('final_reduce', self.ASPP_concat, pretrained=False, bias=False, k_size=[1, 1],
+                               num_output=num_classes)
+        self.reduce_up
 
         with tf.variable_scope('concate'):
             # concate bottom and skip layer
-            self.skip_conv = get_conv('skip_conv', self.front.skip, pretrained = False, k_size=[1, 1], num_output = 128)
-            self.skip_conv = upsample('skip_conv', self.skip_conv, output_shape = (149, 149))
+            self.skip_conv = get_conv('skip_conv', self.front.skip, pretrained=False, k_size=[1, 1], num_output=128)
+            self.skip_conv = upsample('skip_conv', self.skip_conv, output_shape=(149, 149))
             self.skip_bn = get_bn('skip_bn', self.skip_conv, pretrained=False)
             self.fc = tf.concat((self.fc_c0, self.fc_c1), 3)
             self.fc = tf.concat((self.fc, self.fc_c2), 3)
             self.fc = tf.concat((self.fc, self.fc_c3), 3)
             self.fc = tf.concat((self.fc, self.fc_image_pooling), 3)
             print(self.skip_bn.shape)
-            self.fc_upsampled_4 = upsample('upsample1', self.fc, output_shape = (149, 149))
+            self.fc_upsampled_4 = upsample('upsample1', self.fc, output_shape=(149, 149))
             self.fc = tf.concat((self.fc_upsampled_4, self.skip_bn), 3)
             # 1*1 conv
             self.reduce = get_conv('reduce', self.fc, pretrained=False, bias=False, k_size=[1, 1],
                                    num_output=num_classes)
             # upsample
             self.logits = upsample('score', self.reduce, output_shape=self.input_shape[1:3])
-
 
         self.y_pred = tf.argmax(self.logits, axis=-1, output_type=tf.int32, name='y_pred')
         # self.cross_entropy = tf.losses.sparse_softmax_cross_entropy(labels=self.y_input, logits=self.logits, weights=self.y_mask_input)

@@ -9,11 +9,9 @@ Decoder:
 	PSPNet
 	Deeplab v2
 
-# TODO
-1. data augmentation:
-    1. flip
-    2. rotation
-    3. scaling
+## TODO
 
-2. learning rate decay
+1. get the edge as the soft gate.
+2. get the stage-wise heatmap as the soft gate.
+
 

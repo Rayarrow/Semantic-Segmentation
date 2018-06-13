@@ -1,9 +1,9 @@
 import numpy as np
-import tensorflow as tf
 
 from config import *
-from deform_conv import *
-from msra_initializer import *
+
+# from deform_conv import *
+# from msra_initializer import *
 
 UPSAMPLE_BILINEAR = 'bilinear'
 UPSAMPLE_DECONV = 'deconv'
@@ -11,16 +11,12 @@ UPSAMPLE_DECONV = 'deconv'
 
 class component_constructor():
     def __init__(self, weights_path, weights_idx='weights', bias_idx='biases',
-                 bn_idx=('moving_mean', 'moving_variance', 'beta', 'gamma'), weight_decay=None, beta_decay=None,
-                 gamma_decay=None):
+                 bn_idx=('moving_mean', 'moving_variance', 'beta', 'gamma')):
         logger.info('loadding {} ...'.format(weights_path))
         self.weights_dict = np.load(weights_path, encoding='latin1').item()
         self.weights_idx = weights_idx
         self.bias_idx = bias_idx
         self.bn_idx = bn_idx
-        self.weight_regularizer = tf.contrib.layers.l2_regularizer(weight_decay) if weight_decay else None
-        self.beta_regularizer = tf.contrib.layers.l2_regularizer(beta_decay) if beta_decay else None
-        self.gamma_regularizer = tf.contrib.layers.l2_regularizer(gamma_decay) if gamma_decay else None
 
     def get_conv(self, name, bottom, pretrained=True, relu=False, bias=False, strides=(1, 1, 1, 1), k_size=(1, 1),
                  num_output=1, atrous=False):
@@ -28,20 +24,20 @@ class component_constructor():
         num_input = bottom.get_shape().as_list()[-1]
         with tf.variable_scope(name):
             # Load pretrained weights if they exist.
-            #W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
-            W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else msra_initializer()
-            W_shape = self.weights_dict[name][self.weights_idx].shape if pretrained else list(k_size) + [num_input,num_output]
-            
-            strides = atrous if atrous else strides                                                                                             
-            W = tf.get_variable('W', shape=W_shape, dtype=tf.float32, initializer=W_init,
-                                regularizer=self.weight_regularizer)
+            # W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
+            W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else None
+            W_shape = self.weights_dict[name][self.weights_idx].shape if pretrained else list(k_size) + [num_input,
+                                                                                                         num_output]
+
+            strides = atrous if atrous else strides
+            W = tf.get_variable('W', shape=W_shape, dtype=tf.float32, initializer=W_init)
             conv_op = tf.nn.atrous_conv2d if atrous else tf.nn.conv2d
             conv_name = 'atrous_conv' if atrous else 'conv2d'
             conv = conv_op(bottom, W, strides, padding='SAME', name=conv_name)
 
             if bias:
-                #b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
-                b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else msra_initializer()
+                # b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
+                b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else None
                 b_shape = self.weights_dict[name][self.bias_idx].shape if pretrained else num_output
                 b = tf.get_variable('b', shape=b_shape, dtype=tf.float32, initializer=b_init)
                 conv = conv + b
@@ -54,10 +50,10 @@ class component_constructor():
                 self.weights_dict[name][self.bn_idx[0]]), moving_variance_initializer=tf.constant_initializer(
                 self.weights_dict[name][self.bn_idx[1]]), beta_initializer=tf.constant_initializer(
                 self.weights_dict[name][self.bn_idx[2]]), gamma_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[3]]), beta_regularizer=self.beta_regularizer,
-                                               gamma_regularizer=self.gamma_regularizer) if pretrained else tf.layers.batch_normalization(
-                bottom, beta_regularizer=self.beta_regularizer, gamma_regularizer=self.gamma_regularizer)
+                self.weights_dict[name][self.bn_idx[3]])) if pretrained else tf.layers.batch_normalization(
+                bottom)
             return tf.nn.relu(bn) if relu else bn
+
     '''
     def get_bottleneck(self, bottom, block_idx, nr_blocks, nr_layers=3, conv_pretrained=True, bn_pretrained=True,
                        pooling=None, atrous=False, rates=None):
@@ -106,7 +102,7 @@ class component_constructor():
                        pooling=None, atrous=False, rates=None, deformable=False):
         # the default block strides.
         block_strides = [[[1, 1, 1, 1] for _ in range(nr_layers)] for _ in range(nr_blocks)]
-        # change the stride of the first layer of the first block.
+        # change the stride of the first layer of the first block of this bottleneck.
         if pooling:
             block_strides[pooling[0]][pooling[1]] = [1, 2, 2, 1]
 
@@ -140,7 +136,6 @@ class component_constructor():
         conv2_pattern = 'conv2{}{}_branch{}{}'
 
         deform = [False, False, True]
-        relu = [False, False, True]
 
         skip_stride = (1, 2, 2, 1) if pooling else (1, 1, 1, 1)
         res_skip = self.get_conv(res_pattern.format(block_idx, 'a', 1, ''), bottom, strides=skip_stride)
@@ -168,15 +163,17 @@ class component_constructor():
                                      bn_pretrained)
                 if deformable and deform[layer]:
                     kernel_num = bottom.shape[3]
-                    debottom = self.get_conv(conv1_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), bottom, pretrained=False, num_output = 512)
-                    debottom = self.deformable_conv(debottom, deform_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)))
+                    debottom = self.get_conv(conv1_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
+                                             bottom, pretrained=False, num_output=512)
+                    debottom = self.deformable_conv(debottom, deform_pattern.format(block_idx, chr(97 + block), 2,
+                                                                                    chr(97 + layer)))
                     concatebottom = tf.concat((bottom, debottom), 3)
-                    bottom = self.get_conv(conv2_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)), concatebottom, pretrained=False, num_output = kernel_num)
+                    bottom = self.get_conv(conv2_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
+                                           concatebottom, pretrained=False, num_output=kernel_num)
             bottom = self.add_relu(bn_skip, bottom, 'fuse{}{}'.format(block_idx, chr(97 + block)))
             bn_skip = bottom
-            
-        return bottom
 
+        return bottom
 
     def add_relu(self, x, y, name=None):
         with tf.variable_scope(name):
@@ -307,12 +304,12 @@ class component_constructor():
     def lateral_conv(self, bottom, output_channel=0, name='lateral_conv'):
         return self.get_conv(name, bottom, False, False, True, num_output=output_channel)
 
-    def get_variance(self, bottom, name, axis = [1,2], keep_dims = False):
+    def get_variance(self, bottom, name, axis=[1, 2], keep_dims=False):
         with tf.variable_scope(name):
-            mean, variance = tf.nn.moments(bottom, axis, keep_dims, name = 'variance')
+            mean, variance = tf.nn.moments(bottom, axis, keep_dims, name='variance')
         return variance
 
-    def get_variance_for_all(self, name, bottom, ksize=(1, 1), num_output = 256):
+    def get_variance_for_all(self, name, bottom, ksize=(1, 1), num_output=256):
         get_variance = self.get_variance
         upsample = self.bilinear
         get_conv = self.get_conv
@@ -322,18 +319,18 @@ class component_constructor():
 
         with tf.variable_scope(name):
             if ksize == origin_size:
-                self.variance = get_variance(bottom, name = 'anameaa')
+                self.variance = get_variance(bottom, name='anameaa')
                 print(self.variance.shape)
                 self.variance = tf.expand_dims(tf.expand_dims(self.variance, 1), 1)
-                self.variance = upsample('v_pooling_upsample', self.variance, output_shape = ksize)
-                self.variance = get_conv('vconv', self.variance, pretrained = False, num_output = num_output)
-                self.variance = get_bn('vbn', self.variance, pretrained = False, relu = False)
+                self.variance = upsample('v_pooling_upsample', self.variance, output_shape=ksize)
+                self.variance = get_conv('vconv', self.variance, pretrained=False, num_output=num_output)
+                self.variance = get_bn('vbn', self.variance, pretrained=False, relu=False)
                 return self.variance
             else:
-                self.split1 = tf.split(bottom, [ksize[0] for i in range(origin_size[0]//ksize[0])], 1)
+                self.split1 = tf.split(bottom, [ksize[0] for i in range(origin_size[0] // ksize[0])], 1)
                 print(np.asarray(self.split1).shape)
                 print(self.split1)
-                split_sizey = [ksize[1] for i in range(origin_size[1]//ksize[1])]
+                split_sizey = [ksize[1] for i in range(origin_size[1] // ksize[1])]
                 self.split2 = []
                 for i in range(np.asarray(self.split1).shape[0]):
                     self.split2.append(tf.split(self.split1[0], split_sizey, 2))
@@ -343,21 +340,24 @@ class component_constructor():
 
                 self.variance = []
                 v_pattern = '{}{}'
-                numx = origin_size[0]//ksize[0]
+                numx = origin_size[0] // ksize[0]
                 # self.variance = np.ones((numx, numx))
                 for i in range(np.asarray(self.split2).shape[0]):
                     for j in range(np.asarray(self.split2).shape[1]):
-                        self.variance.append(tf.expand_dims(tf.expand_dims(get_variance(tf.to_float(self.split2[i][j]), axis=[1, 2], name='variance_'),1), 1))
+                        self.variance.append(tf.expand_dims(
+                            tf.expand_dims(get_variance(tf.to_float(self.split2[i][j]), axis=[1, 2], name='variance_'),
+                                           1), 1))
                         print(self.variance[i * np.asarray(self.split2).shape[0] + j].shape)
                         self.variance[i * np.asarray(self.split2).shape[0] + j] = upsample(
-                            bottom=self.variance[i * np.asarray(self.split2).shape[0] + j],name=v_pattern.format('variance', chr(97 + i)), factor=1, output_shape=ksize)
+                            bottom=self.variance[i * np.asarray(self.split2).shape[0] + j],
+                            name=v_pattern.format('variance', chr(97 + i)), factor=1, output_shape=ksize)
                         print(self.variance[i * np.asarray(self.split2).shape[0] + j].shape)
                 self.variance = np.reshape(self.variance, (numx, numx))
                 print(self.variance.shape)
                 self.v_concat = []
                 for i in range(numx):
                     self.v_concat.append(self.variance[i][0])
-                self.v_concat = np.reshape(self.v_concat, (1,numx))
+                self.v_concat = np.reshape(self.v_concat, (1, numx))
                 for i in range(self.v_concat.shape[1]):
                     for j in range(1, numx):
                         self.v_concat[0][i] = tf.concat([self.v_concat[0][i], self.variance[i][j]], 2, 'aname')
@@ -370,24 +370,23 @@ class component_constructor():
                 print(self.concat.shape)
                 return self.concat
 
-    def deformable_conv(self, bottom, name):
-        input_shape = bottom.shape
-        with tf.variable_scope(name):
-            offsets = self.get_conv('offset_field', bottom, pretrained=False, num_output=input_shape[3]*2)
-            # offsets: (b*c, h, w, 2)
-            offsets = self._to_bc_h_w_2(offsets, input_shape)
-
-            # x: (b*c, h, w)
-            x = self._to_bc_h_w(bottom, input_shape)
-
-            # X_offset: (b*c, h, w)
-            x_offset = tf_batch_map_offsets(x, offsets)
-
-            # x_offset: (b, h, w, c)
-            x_offset = self._to_b_h_w_c(x_offset, input_shape)
-            x_output = self.get_conv('deformable_conv', x_offset, pretrained=False, num_output=input_shape[3])
-            return x_output
-
+    # def deformable_conv(self, bottom, name):
+    #     input_shape = bottom.shape
+    #     with tf.variable_scope(name):
+    #         offsets = self.get_conv('offset_field', bottom, pretrained=False, num_output=input_shape[3]*2)
+    #         # offsets: (b*c, h, w, 2)
+    #         offsets = self._to_bc_h_w_2(offsets, input_shape)
+    #
+    #         # x: (b*c, h, w)
+    #         x = self._to_bc_h_w(bottom, input_shape)
+    #
+    #         # X_offset: (b*c, h, w)
+    #         x_offset = tf_batch_map_offsets(x, offsets)
+    #
+    #         # x_offset: (b, h, w, c)
+    #         x_offset = self._to_b_h_w_c(x_offset, input_shape)
+    #         x_output = self.get_conv('deformable_conv', x_offset, pretrained=False, num_output=input_shape[3])
+    #         return x_output
 
     def compute_output_shape(self, input_shape):
         """Output shape is the same as input shape
@@ -418,4 +417,3 @@ class component_constructor():
         )
         x = tf.transpose(x, [0, 2, 3, 1])
         return x
-
