@@ -1,7 +1,7 @@
 from argparse import ArgumentParser
 from pprint import pprint
 
-from models import *
+from models_front_end import *
 from palette_conversion import VOC_palette
 from training import *
 
@@ -84,8 +84,8 @@ model = FCN(front_end, 32, 21)
 # d_train = load_isprs_train(ISPRS_home, sampling_size=[593, 593])
 # d_val = load_isprs_val(ISPRS_home, sampling_size=[593, 593])
 
-d_train, d_val = load_VOC_pattern_data(VOC_home, num_train=10, num_val=10, image_path='JPEGImages_224',
-                                       label_path='SegmentationClassLabelImages_224')
+d_train, d_val = load_VOC_for_TF(VOC_home, num_train=10, num_val=10, image_path='JPEGImages_224',
+                                 label_path='SegmentationClassLabelImages_224')
 
 is_train = True
 if is_train:

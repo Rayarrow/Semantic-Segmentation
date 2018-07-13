@@ -8,13 +8,13 @@ from os.path import join
 from config import *
 
 
-def load_VOC_pattern_image(data_home, datalist, image_path='JPEGImages', datalist_path='datalist', ext='jpg'):
-    with open(join(data_home, datalist_path, datalist)) as f:
+def load_VOC_pattern_image(image_path, datalist_path, ext='jpg'):
+    with open(datalist_path) as f:
         ids = f.read().split()
     images = []
     for idx, each_id in enumerate(ids):
-        logger.info(f'loading image {each_id} from {join(data_home, image_path)}... {idx}/{len(ids)}')
-        images.append(io.imread(join(data_home, image_path, '.'.join([each_id, ext]))))
+        logger.info(f'loading image {each_id} from {image_path}... {idx}/{len(ids)}')
+        images.append(io.imread(join(image_path, each_id) + '.' + ext))
     return images, ids
 
 
@@ -41,11 +41,16 @@ def save_images(output_dir, images, ids, ext='jpg'):
         io.imsave(join(output_dir, '.'.join([each_id, ext])), each_image)
 
 
-def get_comparison(image_list):
+def get_comparison(image_list, shape=None):
     logger.info('Getting comparison images...')
     comparison = []
     for each_row in tqdm(zip(*image_list)):
-        this_comparison = np.concatenate(each_row, axis=1)
+        if shape is None:
+            this_comparison = np.concatenate(each_row, axis=1)
+        else:
+            rows = [np.concatenate(each_row[i * shape[1]:(i + 1) * shape[1]], axis=1) for i in range(shape[0])]
+            this_comparison = np.concatenate(rows, axis=0)
+
         comparison.append(this_comparison)
     return comparison
 
@@ -173,5 +178,3 @@ def random_sampler(images, id, nr, sampling_size):
             res[idx].append(each_image[each_top: each_top + sampling_size[0], each_left:each_left + sampling_size[1]])
         id_patches.append('{}_random_{}_{}'.format(id, each_top, each_left))
     return res, id_patches
-
-

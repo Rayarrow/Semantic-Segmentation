@@ -1,26 +1,25 @@
 from data_process_vis_utils import *
-from data_preprocess import data_augment
+from data_preprocess import data_augment, mean_image_subtraction
 
 
-def VOC_pattern_input_fn(datahome, datalist, image_path='JPEGImages', label_path='SegmentationClassLabelImages',
-                         datalist_path='ImageSets/Segmentation', num_epoches=1, batch_size=8, is_training=True,
-                         data_aug=lambda image, label: data_augment(image, label, 513, 513, 255)):
-    def _parse_single(image_path, label_path):
-        raw_image = tf.read_file(image_path, 'rb')
-        raw_label = tf.read_file(label_path, 'rb')
+def VOC_pattern_input_fn(image_home, label_home, datalist_path, nr_channel=3, num_epoches=1, batch_size=8,
+                         is_training=True, data_aug=lambda image, label: data_augment(image, label, 513, 513, 255)):
+    def _parse_single(image_home, label_home):
+        raw_image = tf.read_file(image_home, 'rb')
+        raw_label = tf.read_file(label_home, 'rb')
         image = tf.to_float(tf.image.decode_jpeg(raw_image))
         label = tf.to_int32(tf.image.decode_png(raw_label))
         if is_training:
             image, label = data_aug(image, label)
-        image.set_shape([None, None, None])
+        image.set_shape([None, None, nr_channel])
         label = tf.squeeze(label)
         label.set_shape([None, None])
         return image, label
 
-    with open(join(datahome, datalist_path, datalist)) as f:
+    with open(datalist_path) as f:
         ids = f.read().split()
-        image_ids = [os.path.join(datahome, image_path, f'{each_id}.jpg') for each_id in ids]
-        label_ids = [os.path.join(datahome, label_path, f'{each_id}.png') for each_id in ids]
+        image_ids = [os.path.join(image_home, f'{each_id}.jpg') for each_id in ids]
+        label_ids = [os.path.join(label_home, f'{each_id}.png') for each_id in ids]
     dataset = tf.data.Dataset.from_tensor_slices((image_ids, label_ids))
     if is_training:
         dataset = dataset.shuffle(len(ids))
@@ -46,9 +45,9 @@ def _load_VOC_single_type(image_path, label_path, data_id):
     return images, labels, ids
 
 
-def load_VOC_pattern_data(data_home, load_train=True, load_val=True, num_train=None, num_val=None,
-                          image_path='JPEGImages', label_path='SegmentationClassLabelImages',
-                          datalist='ImageSets/Segmentation', train_datalist='train.txt', val_datalist='val.txt'):
+def load_VOC_for_TF(data_home, load_train=True, load_val=True, num_train=None, num_val=None,
+                    image_path='JPEGImages', label_path='SegmentationClassLabelImages',
+                    datalist='ImageSets/Segmentation', train_datalist='train.txt', val_datalist='val.txt'):
     # Define the absolute path of the sub directories.
     image_path = join(data_home, image_path)
     label_path = join(data_home, label_path)

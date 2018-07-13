@@ -13,7 +13,11 @@ class component_constructor():
     def __init__(self, weights_path, weights_idx='weights', bias_idx='biases',
                  bn_idx=('moving_mean', 'moving_variance', 'beta', 'gamma')):
         logger.info('loadding {} ...'.format(weights_path))
-        self.weights_dict = np.load(weights_path, encoding='latin1').item()
+        if weights_path is not None:
+            self.weights_dict = np.load(weights_path, encoding='latin1').item()
+        else:
+            self.weights_dict = None
+
         self.weights_idx = weights_idx
         self.bias_idx = bias_idx
         self.bn_idx = bn_idx
@@ -44,14 +48,14 @@ class component_constructor():
 
             return tf.nn.relu(conv) if relu else conv
 
-    def get_bn(self, name, bottom, pretrained=True, relu=True):
+    def get_bn(self, name, bottom, pretrained=True, relu=True, is_training=True):
         with tf.variable_scope(name):
-            bn = tf.layers.batch_normalization(bottom, moving_mean_initializer=tf.constant_initializer(
+            bn = tf.layers.batch_normalization(bottom, momentum=0.9997, moving_mean_initializer=tf.constant_initializer(
                 self.weights_dict[name][self.bn_idx[0]]), moving_variance_initializer=tf.constant_initializer(
                 self.weights_dict[name][self.bn_idx[1]]), beta_initializer=tf.constant_initializer(
                 self.weights_dict[name][self.bn_idx[2]]), gamma_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[3]])) if pretrained else tf.layers.batch_normalization(
-                bottom)
+                self.weights_dict[name][self.bn_idx[3]]), training=is_training) if pretrained else tf.layers.batch_normalization(
+                bottom, momentum=0.9997, training=is_training)
             return tf.nn.relu(bn) if relu else bn
 
     '''
@@ -205,7 +209,7 @@ class component_constructor():
                 bottom_shape = tf.shape(bottom, name='bottom_shape')
                 return tf.image.resize_bilinear(bottom, (bottom_shape[1] * factor, bottom_shape[2] * factor))
             else:
-                return tf.image.resize_bilinear(bottom, output_shape)
+                return tf.image.resize_bilinear(bottom, (output_shape[1], output_shape[2]))
 
     def get_deconv(self, name, bottom, factor, output_shape=None):
         """
