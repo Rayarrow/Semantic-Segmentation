@@ -1,25 +1,7 @@
-from data_loader import *
+from tensorflow.contrib.slim.nets import resnet_v2
+
 from data_preprocess import mean_substract
 from models_constructor import *
-import numpy as np
-from tensorflow.contrib.slim.nets import resnet_v2
-from config import batch_norm_decay
-
-RGB_MEAN = np.array([[[[123.68, 116.78, 103.94]]]], float)
-
-
-# Not used for now.
-def get_ele(model, upsample_mode):
-    get_conv = model.front.cc.get_conv
-
-    if upsample_mode == UPSAMPLE_BILINEAR:
-        upsample = model.front.cc.bilinear
-    elif upsample_mode == UPSAMPLE_DECONV:
-        upsample = model.front.cc.get_deconv
-    else:
-        raise Exception('invalid upsample mode provided.')
-
-    return get_conv, upsample
 
 
 class VGG16():
@@ -78,8 +60,8 @@ class VGG16():
             self.fcn7 = self.cc.get_fully_as_CNN('fc7', self.fcn6, [1, 1, 4096, 4096])
 
         elif get_FCN == 1:
-            self.fcn6 = get_conv('fc6', self.maxpool_5, False, True, True, k_size=(7, 7), num_output=4096)
-            self.fcn7 = get_conv('fc7', self.fcn6, False, True, True, num_output=4096)
+            self.fcn6 = get_conv('fc6', self.maxpool_5, False, True, True, k_size=(7, 7), num_outputs=4096)
+            self.fcn7 = get_conv('fc7', self.fcn6, False, True, True, num_outputs=4096)
 
         else:
             raise Exception('invalid get_FCN.')
@@ -96,9 +78,14 @@ class VGG16():
         self.f8 = self.conv4_3
         self.f16 = self.conv5_3
         self.f32 = self.fcn7
+        self.net = self.fcn7
 
 
 class ResNet50():
+    """
+    There are several inconsistency with the original ResNet implementation. Slim-Resnet are recommended instead.
+    """
+
     def __init__(self, X_input, image_height, image_width, get_FCN=False, rates=(2, 4), is_training=None, is_init=None):
         self.cc = component_constructor(res50_npy_path)
         self.X_input = X_input
@@ -141,6 +128,51 @@ class ResNet50():
             self.y_pred = tf.argmax(self.fc1000, axis=-1, output_type=tf.int32, name='y_pred')
 
 
+class DarkNet53():
+    def __init__(self, X_input, image_height, image_width, is_training=True, is_init=True):
+        self.X_input = X_input
+        batch_norm_params = {
+            'decay': darknet_batch_norm_decay,
+            'epsilon': 1e-5,
+            'scale': True,
+            'is_training': is_training,
+            'fused': None
+        }
+        X_input = X_input / 255
+        with slim.arg_scope([slim.conv2d], normalizer_fn=slim.batch_norm, normalizer_params=batch_norm_params,
+                            biases_initializer=None, activation_fn=lambda x: tf.nn.leaky_relu(x, 0.1)):
+            with tf.variable_scope('DarkNet53'):
+                with tf.variable_scope('block1'):
+                    net = conv2d_fixed_padding(X_input, 32, 3)
+                    net = conv2d_fixed_padding(net, 64, 3, 2)
+                    net = get_darknet53_block(net, 32)
+                self.f2 = net
+
+                with tf.variable_scope('block2'):
+                    net = conv2d_fixed_padding(net, 128, 3, 2)
+                    for _ in range(2):
+                        net = get_darknet53_block(net, 64)
+                self.f4 = net
+
+                with tf.variable_scope('block3'):
+                    net = conv2d_fixed_padding(net, 256, 3, 2)
+                    for _ in range(8):
+                        net = get_darknet53_block(net, 128)
+                self.f8 = net
+
+                with tf.variable_scope('block4'):
+                    net = conv2d_fixed_padding(net, 512, 3, 2)
+                    for _ in range(8):
+                        net = get_darknet53_block(net, 256)
+                self.f16 = net
+
+                with tf.variable_scope('block5'):
+                    net = conv2d_fixed_padding(net, 1024, 3, 2)
+                    for _ in range(4):
+                        net = get_darknet53_block(net, 512)
+                self.f32 = net
+
+
 class SlimResNet():
     def __init__(self, X_input, image_height, image_width, depth=50, stride=32, get_FCN=1, is_training=True,
                  is_init=True):
@@ -148,7 +180,7 @@ class SlimResNet():
         self.image_height = image_height
         self.image_width = image_width
         self.cc = component_constructor(None)
-        X_input -= RGB_MEAN
+        X_input -= RGB_MEAN_1
 
         pool_name = [f'resnet_v2_{depth}/conv1', f'resnet_v2_{depth}/block1/unit_1/bottleneck_v2',
                      f'resnet_v2_{depth}/block1', f'resnet_v2_{depth}/block2', f'resnet_v2_{depth}/block3']
@@ -166,12 +198,16 @@ class SlimResNet():
         else:
             raise Exception(f'invalid resnet depth={depth}.')
 
-        with tf.contrib.slim.arg_scope(resnet_v2.resnet_arg_scope(batch_norm_decay=batch_norm_decay)):
+        with tf.contrib.slim.arg_scope(resnet_v2.resnet_arg_scope(batch_norm_decay=deeplab_batch_norm_decay)):
             net, nodes = model(X_input, global_pool=not get_FCN, output_stride=stride, is_training=is_training)
 
-        if is_training and is_init:
+        # if is_training and is_init:
+        if is_init:
+            logger.info(f'Initializing variables from {model_path}...')
             variables_to_restore = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-            variables_to_restore.remove(tf.train.get_global_step())
+            variables_to_restore = [each_variable for each_variable in variables_to_restore if
+                                    each_variable.name.startswith('resnet_v2')]
+            # variables_to_restore.remove(tf.train.get_global_step())
             tf.train.init_from_checkpoint(model_path, {v.name.split(':')[0]: v for v in variables_to_restore})
 
             # print('===================================================\n\n')
@@ -198,8 +234,6 @@ class SlimResNet():
         self.f32 = nodes[f_name[4]]
         self.net = net
 
-        print(self.f32.get_shape())
-
 
 class SlimVGG():
     def __init__(self, X_input, image_height, image_width, depth=16, get_FCN=1, is_training=None, is_init=True):
@@ -208,29 +242,30 @@ class SlimVGG():
         self.image_height = image_height
         self.image_width = image_width
         self.cc = component_constructor(None)
-        X_input -= RGB_MEAN
+        X_input -= RGB_MEAN_1
+
+        pool_name = [f'vgg_{depth}/pool{i}' for i in (1, 2, 3, 4, 5)]
+        f_name = [f'vgg_{depth}/conv{i}/conv{i}_{j}' for i, j in ((1, 2), (2, 2), (3, 3), (4, 3), (5, 3))]
+        if depth == 16:
+            model = vgg.vgg_16
+            model_path = vgg16_ckpt_path
+
+        elif depth == 19:
+            model = vgg.vgg_19
+            model_path = vgg19_ckpt_path
+        else:
+            raise Exception(f'invalid vgg depth={depth}.')
 
         with tf.contrib.slim.arg_scope(vgg.vgg_arg_scope()):
-            pool_name = [f'vgg_{depth}/pool{i}' for i in (1, 2, 3, 4, 5)]
-            f_name = [f'vgg_{depth}/conv{i}/conv{i}_{j}' for i, j in ((1, 2), (2, 2), (3, 3), (4, 3), (5, 3))]
-            if depth == 16:
-                model = vgg.vgg_16
-                model_path = vgg16_ckpt_path
-
-            elif depth == 19:
-                model = vgg.vgg_19
-                model_path = vgg19_ckpt_path
-            else:
-                raise Exception(f'invalid vgg depth={depth}.')
+            net, nodes = model(X_input, spatial_squeeze=not get_FCN)
 
         if is_training and is_init:
             variables_to_restore = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
             variables_to_restore.remove(tf.train.get_global_step())
             tf.train.init_from_checkpoint(model_path, {v.name.split(':')[0]: v for v in variables_to_restore})
 
-            net, nodes = model(X_input, spatial_squeeze=not get_FCN)
-            self.fcn6 = self.cc.get_conv('fcn6', nodes[pool_name[4]], False, True, True, k_size=(7, 7), num_output=4096)
-            self.fcn7 = self.cc.get_conv('fcn7', self.fcn6, False, True, True, num_output=4096)
+        self.fcn6 = self.cc.get_conv('fcn6', nodes[pool_name[4]], False, True, True, k_size=(7, 7), num_outputs=4096)
+        self.fcn7 = self.cc.get_conv('fcn7', self.fcn6, False, True, True, num_outputs=4096)
 
         self.pool1 = nodes[pool_name[0]]
         self.pool2 = nodes[pool_name[1]]
@@ -244,3 +279,54 @@ class SlimVGG():
         self.f16 = nodes[f_name[3]]
         self.f32 = self.fcn7 if get_FCN else net
         self.net = net
+
+
+class SimpleConv():
+    def __init__(self, X_input, image_height, image_width, get_FCN=1, is_training=True, stack=False):
+        self.X_input = X_input
+        self.image_height = image_height
+        self.image_width = image_width
+        self.cc = component_constructor(None)
+        get_maxpooling = self.cc.get_maxpooling
+
+        get_bn = lambda name, bottom: self.cc.get_bn(name, bottom, momentum=deeplab_batch_norm_decay,
+                                                     pretrained=False, relu=True, scale=False,
+                                                     is_training=is_training)
+
+        def get_conv_stack(name, input):
+            net = input
+            for i in range(3):
+                net = self.cc.get_conv(f'{name}_{i+1}', net, False, k_size=(3, 3), num_outputs=64)
+                net = get_bn(f'{name}_{i+1}_bn', net)
+            return net
+
+        def get_conv_single(name, input):
+            net = input
+            net = self.cc.get_conv(f'{name}', net, False, k_size=(7, 7), num_outputs=64)
+            net = get_bn(f'{name}_bn', net)
+            return net
+
+        if stack:
+            get_conv = get_conv_stack
+        else:
+            get_conv = get_conv_single
+
+        with tf.variable_scope('Simple_Conv'):
+            self.conv1 = get_conv('conv1', X_input)
+            self.pool1 = get_maxpooling('maxpool_1', self.conv1)
+
+            self.conv2 = get_conv('conv2', self.pool1)
+            self.pool2 = get_maxpooling('maxpool_2', self.conv2)
+
+            self.conv3 = get_conv('conv3', self.pool2)
+            self.pool3 = get_maxpooling('maxpool_3', self.conv3)
+
+            self.conv4 = get_conv('conv4', self.pool3)
+            self.pool4 = get_maxpooling('maxpool_4', self.conv4)
+
+            self.f2 = self.conv2
+            self.f4 = self.conv3
+            self.f8 = self.conv4
+            self.f16 = self.pool4
+
+            self.net = self.pool4

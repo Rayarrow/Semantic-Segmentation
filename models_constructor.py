@@ -1,4 +1,5 @@
 import numpy as np
+import tensorflow.contrib.slim as slim
 
 from config import *
 
@@ -23,7 +24,7 @@ class component_constructor():
         self.bn_idx = bn_idx
 
     def get_conv(self, name, bottom, pretrained=True, relu=False, bias=False, strides=(1, 1, 1, 1), k_size=(1, 1),
-                 num_output=1, atrous=False):
+                 num_outputs=1, atrous=False):
         # Use this to determine the third dimension of W.
         num_input = bottom.get_shape().as_list()[-1]
         with tf.variable_scope(name):
@@ -31,7 +32,7 @@ class component_constructor():
             # W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
             W_init = tf.constant_initializer(self.weights_dict[name][self.weights_idx]) if pretrained else None
             W_shape = self.weights_dict[name][self.weights_idx].shape if pretrained else list(k_size) + [num_input,
-                                                                                                         num_output]
+                                                                                                         num_outputs]
 
             strides = atrous if atrous else strides
             W = tf.get_variable('W', shape=W_shape, dtype=tf.float32, initializer=W_init)
@@ -42,21 +43,35 @@ class component_constructor():
             if bias:
                 # b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else tf.contrib.layers.xavier_initializer()
                 b_init = tf.constant_initializer(self.weights_dict[name][self.bias_idx]) if pretrained else None
-                b_shape = self.weights_dict[name][self.bias_idx].shape if pretrained else num_output
+                b_shape = self.weights_dict[name][self.bias_idx].shape if pretrained else num_outputs
                 b = tf.get_variable('b', shape=b_shape, dtype=tf.float32, initializer=b_init)
                 conv = conv + b
 
             return tf.nn.relu(conv) if relu else conv
 
-    def get_bn(self, name, bottom, pretrained=True, relu=True, is_training=True):
+    def get_bn(self, name, bottom, momentum=0.9997, pretrained=True, relu=True, scale=False, is_training=True):
         with tf.variable_scope(name):
-            bn = tf.layers.batch_normalization(bottom, momentum=0.9997, moving_mean_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[0]]), moving_variance_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[1]]), beta_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[2]]), gamma_initializer=tf.constant_initializer(
-                self.weights_dict[name][self.bn_idx[3]]), training=is_training) if pretrained else tf.layers.batch_normalization(
-                bottom, momentum=0.9997, training=is_training)
+            bn = tf.layers.batch_normalization(bottom, momentum=momentum, scale=scale,
+                                               moving_mean_initializer=tf.constant_initializer(
+                                                   self.weights_dict[name][self.bn_idx[0]]),
+                                               moving_variance_initializer=tf.constant_initializer(
+                                                   self.weights_dict[name][self.bn_idx[1]]),
+                                               beta_initializer=tf.constant_initializer(
+                                                   self.weights_dict[name][self.bn_idx[2]]),
+                                               gamma_initializer=tf.constant_initializer(
+                                                   self.weights_dict[name][self.bn_idx[3]]),
+                                               training=is_training) if pretrained else tf.layers.batch_normalization(
+                bottom, momentum=momentum, scale=scale, training=is_training)
             return tf.nn.relu(bn) if relu else bn
+
+    def get_conv_bn(self, name, bottom, pretrained=False, relu=(False, True), bias=False, scale=False, momentum=0.9997,
+                    is_training=True, strides=(1, 1, 1, 1), k_size=(1, 1), num_outputs=1, atrous=False):
+        """
+        get both conv and bn in a single run.
+        """
+        bottom = self.get_conv(name, bottom, pretrained, relu[0], bias, strides, k_size, num_outputs, atrous)
+        bottom = self.get_bn(f'{name}_bn', bottom, momentum, pretrained, relu[1], scale, is_training)
+        return bottom
 
     '''
     def get_bottleneck(self, bottom, block_idx, nr_blocks, nr_layers=3, conv_pretrained=True, bn_pretrained=True,
@@ -168,12 +183,12 @@ class component_constructor():
                 if deformable and deform[layer]:
                     kernel_num = bottom.shape[3]
                     debottom = self.get_conv(conv1_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
-                                             bottom, pretrained=False, num_output=512)
+                                             bottom, pretrained=False, num_outputs=512)
                     debottom = self.deformable_conv(debottom, deform_pattern.format(block_idx, chr(97 + block), 2,
                                                                                     chr(97 + layer)))
                     concatebottom = tf.concat((bottom, debottom), 3)
                     bottom = self.get_conv(conv2_pattern.format(block_idx, chr(97 + block), 2, chr(97 + layer)),
-                                           concatebottom, pretrained=False, num_output=kernel_num)
+                                           concatebottom, pretrained=False, num_outputs=kernel_num)
             bottom = self.add_relu(bn_skip, bottom, 'fuse{}{}'.format(block_idx, chr(97 + block)))
             bn_skip = bottom
 
@@ -306,14 +321,14 @@ class component_constructor():
         return tf.identity(values, name)
 
     def lateral_conv(self, bottom, output_channel=0, name='lateral_conv'):
-        return self.get_conv(name, bottom, False, False, True, num_output=output_channel)
+        return self.get_conv(name, bottom, False, False, True, num_outputs=output_channel)
 
     def get_variance(self, bottom, name, axis=[1, 2], keep_dims=False):
         with tf.variable_scope(name):
             mean, variance = tf.nn.moments(bottom, axis, keep_dims, name='variance')
         return variance
 
-    def get_variance_for_all(self, name, bottom, ksize=(1, 1), num_output=256):
+    def get_variance_for_all(self, name, bottom, ksize=(1, 1), num_outputs=256):
         get_variance = self.get_variance
         upsample = self.bilinear
         get_conv = self.get_conv
@@ -327,7 +342,7 @@ class component_constructor():
                 print(self.variance.shape)
                 self.variance = tf.expand_dims(tf.expand_dims(self.variance, 1), 1)
                 self.variance = upsample('v_pooling_upsample', self.variance, output_shape=ksize)
-                self.variance = get_conv('vconv', self.variance, pretrained=False, num_output=num_output)
+                self.variance = get_conv('vconv', self.variance, pretrained=False, num_outputs=num_outputs)
                 self.variance = get_bn('vbn', self.variance, pretrained=False, relu=False)
                 return self.variance
             else:
@@ -369,7 +384,7 @@ class component_constructor():
                 self.concat = self.v_concat[0][0]
                 for i in range(1, numx):
                     self.concat = tf.concat([self.concat, self.v_concat[0][i]], 1, 'conv2')
-                self.concat = get_conv('vconv', self.concat, pretrained=False, num_output=num_output)
+                self.concat = get_conv('vconv', self.concat, pretrained=False, num_outputs=num_outputs)
                 self.concat = get_bn('vbn', self.concat, pretrained=False, relu=False)
                 print(self.concat.shape)
                 return self.concat
@@ -421,3 +436,84 @@ class component_constructor():
         )
         x = tf.transpose(x, [0, 2, 3, 1])
         return x
+
+
+def _fixed_padding(inputs, kernel_size, mode='CONSTANT'):
+    """
+    pad the input feature map independently of input size.
+    """
+    total_padding = kernel_size - 1
+    padding_begin = total_padding // 2
+    padding_end = total_padding - padding_begin
+    return tf.pad(inputs, [[0, 0], [padding_begin, padding_end], [padding_begin, padding_end], [0, 0]], mode)
+
+
+def conv2d_fixed_padding(input, num_outputs, kernel_size, stride=1):
+    """
+    When `stride` is greater than 1, use the input-size-independent-padding convolution layer.
+    """
+    if stride > 1:
+        input = _fixed_padding(input, kernel_size)
+    input = slim.conv2d(input, num_outputs, kernel_size, stride, ('SAME' if stride == 1 else 'VALID'))
+    return input
+
+
+def get_darknet53_block(input, base_num_outputs):
+    """
+    Get the internal block of darknet53. Similar to bottlenecks of ResNet.
+    """
+    shortcut = input
+    input = conv2d_fixed_padding(input, base_num_outputs, 1)
+    input = conv2d_fixed_padding(input, base_num_outputs * 2, 3)
+    return input + shortcut
+
+
+def get_yolo3_block(input, base_num_outputs):
+    """
+    convolution blocks inside detection-end.
+    """
+    for _ in range(2):
+        input = conv2d_fixed_padding(input, base_num_outputs, 1)
+        input = conv2d_fixed_padding(input, base_num_outputs * 2, 3)
+    input = conv2d_fixed_padding(input, base_num_outputs, 1)
+    route = input
+    input = conv2d_fixed_padding(input, base_num_outputs * 2, 3)
+    return route, input
+
+
+def get_yolo3_detection(feature_map, num_classes, anchors, image_size):
+    num_anchors = len(anchors)
+    num_box_attrs = 5 + num_classes
+    predictions = slim.conv2d(feature_map, num_anchors * num_box_attrs, 1, 1, normalizer_fn=None, activation_fn=None,
+                              biases_initializer=tf.zeros_initializer())
+    grid_size = tf.shape(feature_map)[1:3]
+    predictions = tf.reshape(predictions, [-1, grid_size[0] * grid_size[1] * num_anchors, num_box_attrs])
+
+    # Get anchors on the feature maps of current resolution based on its strides.
+    strides = [image_size[0] / grid_size[0], image_size[1] / grid_size[1]]
+    anchors_on_feature_map = [[each_anchor[0] / strides[0], each_anchor[1] / strides[1]] for each_anchor in anchors]
+
+    box_center, box_size, confidence, logits = tf.split(predictions, [2, 2, 1, num_classes], -1)
+
+    # Get the center of each grid on the feature map.
+    # Iteration order: 1. x and y 2. anchors 3. grids
+    offsets_height, offsets_width = tf.meshgrid(tf.range(grid_size[0]), tf.range(grid_size[1]), dtype=tf.float32)
+    offsets = tf.concat([tf.reshape(offsets_height, [1, -1]), tf.reshape(offsets_width, [1, -1])], -1)
+    offsets = tf.tile(offsets, [1, num_anchors])
+    offsets = tf.reshape(offsets, [1, -1, 2])
+
+    # Get the center of the bounding boxes on the original image.
+    box_center = tf.nn.sigmoid(box_center)
+    box_center += offsets
+    box_center *= strides
+
+    # Get the exact heights and widths of bounding boxes.
+    anchors_on_feature_map = tf.tile(anchors_on_feature_map, [grid_size[0] * grid_size[1], 1])
+    anchors_on_feature_map = tf.expand_dims(anchors_on_feature_map, 0)
+    box_size = tf.exp(box_size) * anchors_on_feature_map
+    box_size *= strides
+
+    confidence = tf.nn.sigmoid(confidence)
+    probabilities = tf.nn.sigmoid(logits)
+
+    return tf.concat([box_center, box_size, confidence, probabilities], -1)

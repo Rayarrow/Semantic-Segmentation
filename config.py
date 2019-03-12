@@ -1,99 +1,145 @@
 import logging
 import platform
 import sys
-import tensorflow as tf
-from palette_conversion import *
-
 from os.path import join
+
+import numpy as np
+import tensorflow as tf
+
+# =========================== DEFINE PLATFORM INDEPENDENT CONSTANT  ===========================
+
+deeplab_batch_norm_decay = 0.9997
+darknet_batch_norm_decay = 0.9
+
+RGB_MEAN_1 = np.array([[[[123.68, 116.78, 103.94]]]], float)
+
+VOC_colormap_label = [
+    [[0, 0, 0], 'background'],  # 0
+    [[128, 0, 0], 'aero plane'],  # 1
+    [[0, 128, 0], 'bicycle'],  # 2
+    [[128, 128, 0], 'bird'],  # 3
+    [[0, 0, 128], 'boat'],  # 4
+    [[128, 0, 128], 'bottle'],  # 5
+    [[0, 128, 128], 'bus'],  # 6
+    [[128, 128, 128], 'car'],  # 7
+    [[64, 0, 0], 'cat'],  # 8
+    [[192, 0, 0], 'chair'],  # 9
+    [[64, 128, 0], 'cow'],  # 10
+    [[192, 128, 0], 'dining-table'],  # 11
+    [[64, 0, 128], 'dog'],  # 12
+    [[192, 0, 128], 'horse'],  # 13
+    [[64, 128, 128], 'motorbike'],  # 14
+    [[192, 128, 128], 'person'],  # 15
+    [[0, 64, 0], 'potted-plant'],  # 16
+    [[128, 64, 0], 'sheep'],  # 17
+    [[0, 192, 0], 'sofa'],  # 18
+    [[128, 192, 0], 'train'],  # 19
+    [[0, 64, 128], 'tv/monitor']  # 20
+]
+
+VOC_palette, VOC_label = zip(*VOC_colormap_label)
+
+minhou_palette = [[0, 0, 0],
+                  [100, 160, 0],
+                  [100, 120, 60],
+                  [120, 200, 100],
+                  [255, 255, 255],
+                  [178, 178, 178],
+                  [130, 130, 130],
+                  [245, 162, 122],
+                  [245, 185, 122],
+                  [150, 220, 240],
+                  [255, 255, 190]]
+
+Vinhingen_palette = [[255, 255, 255],
+                     [0, 0, 255],
+                     [0, 255, 255],
+                     [0, 255, 0],
+                     [255, 255, 0],
+                     [255, 0, 0]]
+
+fujian_palette = [
+    [140, 255, 90],
+    [150, 255, 100],
+    [160, 255, 110],
+    [255, 255, 200],
+    [200, 50, 255],
+    [92, 92, 92],
+    [200, 200, 200],
+    [229, 229, 229],
+    [180, 180, 180],
+    [100, 200, 250],
+]
+
+TSUNAMI_palette = [[255, 255, 255],
+                   [0, 0, 0]]
+
+# --------------------------- DEFINE PLATFORM INDEPENDENT CONSTANT  ---------------------------
+
 
 # Some platform-specified parameters are specified in this file.
 
 # remove tensorflow default handler.
+
 tf.logging.set_verbosity(logging.INFO)
 logger = logging.getLogger('tensorflow')
 logger.removeHandler(logger.handlers[-1])
 
 print('Setting logger handler and format...')
 logger.setLevel(logging.INFO)
+common_formater = logging.Formatter('%(asctime)s : %(levelname)s : %(message)s')
+
 tensorflow_stream_handler = logging.StreamHandler(sys.stdout)
-tensorflow_stream_handler.setFormatter(
-    logging.Formatter('%(asctime)s : %(name)-12s - %(levelname)s : %(message)s'))
+tensorflow_stream_handler.setFormatter(common_formater)
 logger.addHandler(tensorflow_stream_handler)
 logger.info('logger gotten.')
 
 # On my PC
-if platform.system() == 'Windows':
-    vgg16_npy_path = r'G:\Documents\Exp Data\Models\Tensorflow\vgg16.npy'
-    res50_npy_path = r'G:\Documents\Exp Data\Models\Tensorflow\Resnet50.npy'
-    VOC_home = r'G:\Documents\Exp Data\PASCAL VOC\VOCdevkit\VOC2012'
-    ISPRS_home = r'G:\Documents\Exp Data\data-li\segmentation-remote sensing\ISPRS\cropped'
-    minhou_data_home = r'G:\Documents\Exp Data\data-li\segmentation-remote sensing\minhou_patch_十幅_171124'
-    summary_home = r'G:\tmp'
+if platform.node() == 'Rayarrow-S-PC':
+    dataset_home = r'D:\Datasets'
+    summary_home = r'D:\tmp'
 
-# On my Mac
-elif platform.system() == 'Darwin':
-    pretrained_dir = r'/Volumes/Transcend/Dataset/Models'
-    vgg16_npy_path = r'/Volumes/Transcend/Dataset/Models/vgg16.npy'
-    res50_npy_path = r'/Volumes/Transcend/Dataset/Models/Resnet50.npy'
-
-    ISPRS_home = '/Volumes/Transcend/Dataset/ISPRS/cropped'
-    VOC_home = r'/Volumes/Transcend/Dataset/segmentation_dataset/VOC2012'
-    fujian_home = '/Volumes/Transcend/Dataset/segmentation_dataset/fujian'
-    summary_home = r'/Volumes/Transcend/summary/SS'
+# On my lab-PC
+elif platform.node() == 'Rayarrow-Lab-PC':
+    dataset_home = 'D:\Datasets'
+    summary_home = r'D:\tmp'
 
 # On the server
-elif platform.system() == 'Linux':
-    pretrained_dir = r'/media/mass/dataset/models'
-    vgg16_npy_path = r'/media/mass/dataset/models/vgg16.npy'
-    res50_npy_path = r'/media/mass/dataset/models/Resnet50.npy'
-
-    VOC_home = r'/media/mass/dataset/VOC2012'
-    fujian_home = r'/media/mass/dataset/fujian'
-    ISPRS_home = '/media/mass/dataset/zisprs/cropped'
-    summary_home = r'/home/zxw/summary/SS'
+elif platform.node() == 'bigdata':
+    dataset_home = '/media/mass/dataset'
+    summary_home = '/media/mass/dataset/zxw_temp/SS'
 
 else:
-    raise Exception('npy and VOC path not specified.')
+    raise Exception('invalid platform.node().')
 
-# ========================= Only need to change the wrapped around code snippet ====================
-data = 'VOC'
-if data == 'VOC':
-    data_home = VOC_home
-    datalist_home = join(VOC_home, 'ImageSets/Segmentation')
-    image_home = join(VOC_home, 'JPEGImages')
-    label_home = join(VOC_home, 'SegmentationClass')
-    palette = VOC_palette
+CV_dataset_home = join(dataset_home, 'CV')
 
-elif data == 'ISPRS':
-    data_home = ISPRS_home
-    datalist_home = join(ISPRS_home, 'datalist')
-    image_home = join(ISPRS_home, 'images')
-    label_home = join(ISPRS_home, 'labels')
-    palette = ISPRS_palette
+semantic_segmentation_home = join(CV_dataset_home, 'semantic_segmentation')
+VOC_home = join(semantic_segmentation_home, 'VOC2012')
+Vinhingen_home = join(semantic_segmentation_home, 'Vinhingen')
+fujian_home = join(semantic_segmentation_home, 'fujian20180924')
 
-elif data == 'fujian':
-    data_home = fujian_home
-    datalist_home = join(fujian_home, 'datalist')
-    image_home = join(fujian_home, 'images')
-    label_home = join(fujian_home, 'labels')
-    palette = fujian_palette
+change_detection_home = join(CV_dataset_home, 'change_detection')
+TSUNAMI_home = join(change_detection_home, 'TSUNAMI')
+GSV_home = join(change_detection_home, 'GSV')
 
-else:
-    raise Exception('Invalid data name.')
+pretrained_dir = join(dataset_home, 'models')
 
-colormap_home = join(data_home, 'colormaps')
-
-image_ext = 'jpg'
-label_ext = 'png'
-datalist = 'val.txt'
-# ========================= Only need to change the wrapped around code snippet ====================
-
-VOC_image_home = join(VOC_home, 'JPEGImages')
-VOC_label_home = join(VOC_home, 'SegmentationClass')
-VOC_datalist_home =join(VOC_home, 'ImageSets/Segmentation')
+res50_npy_path = join(pretrained_dir, 'xx.npy')
+vgg16_npy_path = join(pretrained_dir, 'vgg16.npy')
 res50_ckpt_path = join(pretrained_dir, 'resnet_v2_50_2017_04_14/resnet_v2_50.ckpt')
 res101_ckpt_path = join(pretrained_dir, 'resnet_v2_101_2017_04_14/resnet_v2_101.ckpt')
 vgg16_ckpt_path = join(pretrained_dir, 'vgg_16.ckpt')
 vgg19_ckpt_path = None
 
-batch_norm_decay = 0.9997
+# ========================= Only need to change the wrapped around code snippet ====================
+
+data_home_bundle = {
+    'VOC': [VOC_home, 'images', 'labels', 'datalist', VOC_palette],
+    'Vinhingen': [Vinhingen_home, 'images', 'labels', 'datalist', Vinhingen_palette],
+    'fujian': [fujian_home, 'images', 'labels', 'datalist', fujian_palette],
+    'TSUNAMI': [TSUNAMI_home, 'images', 'labels', 'datalist', TSUNAMI_palette],
+    'GSV': [GSV_home, 'images', 'labels', 'datalist', TSUNAMI_palette],
+}
+
+# ========================= Only need to change the wrapped around code snippet ====================

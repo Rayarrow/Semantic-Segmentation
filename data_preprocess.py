@@ -1,19 +1,27 @@
-import numpy as np
 from PIL import Image
 
 from config import *
 
 
-def data_augment(img, label, crop_height, crop_width, ignore_label=0, min_scale=0.5, max_scale=2.0):
-    img, label = random_rescale_image_and_label(img, label, min_scale, max_scale)
-    img, label = random_crop_or_pad_image_and_label(img, label, crop_height, crop_width, ignore_label)
-    img, label = random_left_right_flip(img, label)
-    return img, label
+def data_augment(image, label, crop_height, crop_width, ignore_label=0, min_scale=0.5, max_scale=2.0):
+    nr_image = len(image)
+    image = tf.concat(image, axis=-1)
+
+    image, label = random_rescale_image_and_label(image, label, min_scale, max_scale)
+    image, label = random_crop_or_pad_image_and_label(image, label, crop_height, crop_width, ignore_label)
+    image, label = random_left_right_flip(image, label)
+
+    res_images = []
+    for i in range(nr_image):
+        res_images.append(image[:, :, i * 3:(i + 1) * 3])
+    res_images = tuple(res_images)
+
+    return res_images, label
 
 
-def resize_single_pair(image, label, height=224, width=224):
-    return tf.image.resize_images(image, (height, width)), \
-           tf.image.resize_images(label, (height, width), tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+# def resize_single_pair(image, label, height=224, width=224):
+#     return tf.image.resize_images(image, (height, width)), \
+#            tf.image.resize_images(label, (height, width), tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 
 
 def mean_substract(images):
@@ -26,13 +34,6 @@ def mean_addition(images):
     rgb_mean = tf.constant([123.68, 116.779, 103.939], dtype=tf.float32, shape=[3], name='mean')
     b, g, r = tf.split(images, 3, axis=3, name='rgb_spliter_addition')
     return tf.concat([r, g, b], axis=3) + rgb_mean
-
-
-def random_left_right_flip(image, label):
-    prob = tf.random_uniform([], 0, 1, dtype=tf.float32)
-    image, label = tf.cond(prob < 0.5,
-                           lambda: (tf.reverse(image, [-2]), tf.reverse(label, [-2])), lambda: (image, label))
-    return image, label
 
 
 def mean_image_subtraction(image, means):
@@ -95,11 +96,9 @@ def random_rescale_image_and_label(image, label, min_scale, max_scale):
         [], minval=min_scale, maxval=max_scale, dtype=tf.float32)
     new_height = tf.to_int32(height * scale)
     new_width = tf.to_int32(width * scale)
-    image = tf.image.resize_images(image, [new_height, new_width],
-                                   method=tf.image.ResizeMethod.BILINEAR)
+    image = tf.image.resize_images(image, [new_height, new_width], method=tf.image.ResizeMethod.BILINEAR)
     # Since label classes are integers, nearest neighbor need to be used.
-    label = tf.image.resize_images(label, [new_height, new_width],
-                                   method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
+    label = tf.image.resize_images(label, [new_height, new_width], method=tf.image.ResizeMethod.NEAREST_NEIGHBOR)
 
     return image, label
 
@@ -132,14 +131,21 @@ def random_crop_or_pad_image_and_label(image, label, crop_height, crop_width, ig
         tf.maximum(crop_height, image_height),
         tf.maximum(crop_width, image_width))
     image_and_label_crop = tf.random_crop(
-        image_and_label_pad, [crop_height, crop_width, 4])
+        image_and_label_pad, [crop_height, crop_width, tf.shape(image)[-1] + 1])
 
-    image_crop = image_and_label_crop[:, :, :3]
-    label_crop = image_and_label_crop[:, :, 3:]
+    image_crop = image_and_label_crop[:, :, :-1]
+    label_crop = image_and_label_crop[:, :, -1:]
     label_crop += ignore_label
     label_crop = tf.to_int32(label_crop)
 
     return image_crop, label_crop
+
+
+def random_left_right_flip(image, label):
+    prob = tf.random_uniform([], 0, 1, dtype=tf.float32)
+    image, label = tf.cond(prob < 0.5,
+                           lambda: (tf.reverse(image, [-2]), tf.reverse(label, [-2])), lambda: (image, label))
+    return image, label
 
 
 def decode_labels(mask, palette, num_images=1, num_classes=21):

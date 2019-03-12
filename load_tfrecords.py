@@ -35,4 +35,3 @@ label = tf.cast(feature['label'], tf.int32)
 
 sio.imshow(image)
 print(label)
-

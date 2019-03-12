@@ -2,52 +2,91 @@ from models_front_end import *
 
 
 def segmentation_model_fn(features, labels, mode, params):
-    is_training = mode == tf.estimator.ModeKeys.TRAIN
+    print(2)
+    is_training = mode == tf.estimator.ModeKeys.TRAIN and not params['frozen']
     init_model_path = params['init_model_path']
-    front_end = params['front_end'](features, params['image_height'], params['image_width'], get_FCN=1,
-                                    is_training=is_training)
-    model = params['model'](front_end, params['num_classes'], is_training=is_training)
+    logger.info(f'!!! is_training: {is_training}')
+
+    if params['structure_mode'] == 'seg' or params['structure_mode'] == 'sup':
+        if params['structure_mode'] == 'sup':
+            feature = tf.concat([features[0], features[1]], axis=-1)
+        else:
+            feature = features
+
+        front_end = params['front_end'](feature, params['image_height'], params['image_width'], get_FCN=1,
+                                        is_training=is_training)
+        model = params['model'](front_end, params['num_classes'], is_training=is_training)
+        logits = model.logits
+
+    elif params['structure_mode'] == 'siamese':
+        with tf.variable_scope('') as scope:
+            front_end1 = params['front_end'](features[0], params['image_height'], params['image_width'], get_FCN=1,
+                                             is_training=is_training)
+            model_1 = params['model'](front_end1, params['num_classes'], is_training=is_training)
+            scope.reuse_variables()
+            front_end2 = params['front_end'](features[1], params['image_height'], params['image_width'], get_FCN=1,
+                                             is_training=is_training)
+            model_2 = params['model'](front_end2, params['num_classes'], is_training=is_training)
+
+            logits = tf.abs(model_1.logits - model_2.logits)
+
+    else:
+        raise Exception('invalid structure_mode.')
+
+    y_pred = tf.argmax(logits, axis=-1, output_type=tf.int32, name='y_pred')
+    y_prob = tf.nn.softmax(logits)
 
     predictions = {
-        'y_pred': model.y_pred,
-        'y_prob': model.y_prob,
+        'y_pred': y_pred,
+        'y_prob': y_prob,
     }
 
     if mode == tf.estimator.ModeKeys.PREDICT:
         return tf.estimator.EstimatorSpec(mode, predictions=predictions)
 
+    valid_mask = tf.not_equal(labels, params['ignore_label'])
+    valid_mask.set_shape([None, None, None])
+    valid_logits = tf.boolean_mask(logits, valid_mask)
+    valid_label = tf.boolean_mask(labels, valid_mask)
+    valid_pred = tf.boolean_mask(y_pred, valid_mask)
+
+    cross_entropy_loss = tf.losses.sparse_softmax_cross_entropy(valid_label, valid_logits)
+
     if init_model_path:
-        variables_to_restore = tf.train.list_variables(init_model_path)
-        variables_to_restore.remove(tf.train.get_global_step())
-        tf.train.init_from_checkpoint(init_model_path, {v.name.split(':')[0]: v for v in variables_to_restore})
+        logger.info(f'Manually restoring from pre-trained network{init_model_path}...')
+        variables_in_ckpt = set(e[0] for e in tf.train.list_variables(init_model_path))
+        if 'global_step' in variables_in_ckpt:
+            variables_in_ckpt.remove('global_step')
+
+        variables_to_restore = {}
+        for each_variable in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES):
+            if each_variable.name in variables_in_ckpt:
+                variables_to_restore[each_variable.name] = each_variable
+
+        tf.train.init_from_checkpoint(init_model_path, variables_to_restore)
+        logger.info(f'{len(variables_to_restore)} variables restored successfully.')
 
     # tf.global_variables_initializer().run(session=tf.Session())
 
-    valid_mask = tf.not_equal(labels, params['ignore_label'])
-    valid_mask.set_shape([None, None, None])
-    valid_logits = tf.boolean_mask(model.logits, valid_mask)
-    valid_label = tf.boolean_mask(labels, valid_mask)
-    valid_pred = tf.boolean_mask(model.y_pred, valid_mask)
-
-    cross_entropy_loss = tf.losses.sparse_softmax_cross_entropy(valid_label, valid_logits)
     if params['weight_decay'] is not None:
         trainable_vars = [v for v in tf.trainable_variables()]
         loss = cross_entropy_loss + tf.add_n([tf.nn.l2_loss(v) for v in trainable_vars]) * params['weight_decay']
     else:
         loss = cross_entropy_loss
 
-    tf.identity(loss, name='loss')
-
     metrics = {
         'accuracy': tf.metrics.accuracy(valid_label, valid_pred),
-        'miou': tf.metrics.mean_iou(valid_label, valid_pred, params['num_classes']),
+        'mean_iou': tf.metrics.mean_iou(valid_label, valid_pred, params['num_classes']),
     }
 
-    miou = compute_mean_iou(metrics['miou'][1], params['num_classes'])
+    miou = compute_mean_iou(metrics['mean_iou'][1], params['num_classes'])
+    f1 = compute_mean_iou(metrics['mean_iou'][1], params['num_classes'], name='f1')
 
+    tf.identity(loss, name='loss')
+    tf.identity(cross_entropy_loss, name='cross_entropy_loss')
     tf.identity(metrics['accuracy'][1], name='acc')
     tf.identity(miou, name='miou')
-    tf.identity(cross_entropy_loss, name='cross_entropy_loss')
+    tf.identity(f1, name='f1')
 
     # print(tf.get_collection(tf.GraphKeys.UPDATE_OPS))
     # exit(1)
@@ -56,6 +95,7 @@ def segmentation_model_fn(features, labels, mode, params):
     tf.summary.scalar('cross_entropy_loss', cross_entropy_loss)
     tf.summary.scalar('acc', metrics['accuracy'][1])
     tf.summary.scalar('miou', miou)
+    tf.summary.scalar('f1', f1)
 
     # gt_decoded_labels = tf.py_func(decode_labels,
     #                                [labels, params['palette'], params['batch_size'], params['num_classes']], tf.uint8)
@@ -82,37 +122,6 @@ def segmentation_model_fn(features, labels, mode, params):
 
         tf.summary.scalar('lr', lr)
 
-        # [print(v) for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)]
-        # exit(1)
-
-        # with tf.variable_scope('', reuse=True):
-        #     moving_means = [
-        #         tf.get_variable('aspp/conv_1x1/BatchNorm/moving_mean'),
-        #         tf.get_variable('aspp/conv_3x3_1/BatchNorm/moving_mean'),
-        #         tf.get_variable('aspp/conv_3x3_2/BatchNorm/moving_mean'),
-        #         tf.get_variable('aspp/conv_3x3_3/BatchNorm/moving_mean'),
-        #         tf.get_variable('aspp/image_level_features/conv_1x1/BatchNorm/moving_mean'),
-        #         tf.get_variable('aspp/conv_1x1_concat/BatchNorm/moving_mean')
-        #     ]
-        #
-        #     moving_variances = [
-        #         tf.get_variable('aspp/conv_1x1/BatchNorm/moving_variance'),
-        #         tf.get_variable('aspp/conv_3x3_1/BatchNorm/moving_variance'),
-        #         tf.get_variable('aspp/conv_3x3_2/BatchNorm/moving_variance'),
-        #         tf.get_variable('aspp/conv_3x3_3/BatchNorm/moving_variance'),
-        #         tf.get_variable('aspp/image_level_features/conv_1x1/BatchNorm/moving_variance'),
-        #         tf.get_variable('aspp/conv_1x1_concat/BatchNorm/moving_variance')
-        #     ]
-        #
-        # reduce_moving_mean = [tf.reduce_mean(each_mm) for each_mm in moving_means]
-        # reduce_moving_variance = [tf.reduce_mean(each_mv) for each_mv in moving_variances]
-        #
-        # tf.identity(reduce_moving_mean, name='debug_moving_mean')
-        # tf.identity(reduce_moving_variance, name='debug_moving_variance')
-        #
-        # tf.Print(reduce_moving_mean[0], reduce_moving_mean)
-        # tf.Print(reduce_moving_variance[0], reduce_moving_variance)
-
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         with tf.control_dependencies(update_ops):
             optimizer = tf.train.MomentumOptimizer(lr, params['momentum'])
@@ -127,12 +136,13 @@ def compute_mean_iou(total_cm, num_classes, name='mean_iou'):
     sum_over_col = tf.to_float(tf.reduce_sum(total_cm, 1))
     cm_diag = tf.to_float(tf.diag_part(total_cm))
     denominator = sum_over_row + sum_over_col - cm_diag
+    if name == 'f1':
+        denominator += cm_diag
 
     # The mean is only computed over classes that appear in the
     # label or prediction tensor. If the denominator is 0, we need to
     # ignore the class.
-    num_valid_entries = tf.reduce_sum(tf.cast(
-        tf.not_equal(denominator, 0), dtype=tf.float32))
+    num_valid_entries = tf.reduce_sum(tf.cast(tf.not_equal(denominator, 0), dtype=tf.float32))
 
     # If the value of the denominator is 0, set it to 1 to avoid
     # zero division.
@@ -143,9 +153,11 @@ def compute_mean_iou(total_cm, num_classes, name='mean_iou'):
     iou = tf.div(cm_diag, denominator)
 
     for i in range(num_classes):
-        tf.identity(iou[i], name='train_iou_class{}'.format(i))
-        tf.summary.scalar('train_iou_class{}'.format(i), iou[i])
+        tf.identity(iou[i], name=f'train_{name}_class{i}')
+        tf.summary.scalar(f'train_{name}_class{i}', iou[i])
 
     # If the number of valid entries is 0 (no classes) we return 0.
     result = tf.where(tf.greater(num_valid_entries, 0), tf.reduce_sum(iou, name=name) / num_valid_entries, 0)
+    if name == 'f1':
+        result *= 2
     return result
