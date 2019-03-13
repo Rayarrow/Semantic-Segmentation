@@ -7,55 +7,74 @@ from data_loader import VOC_pattern_input_fn
 from data_preprocess import data_augment
 from obsolete.data_process_vis_utils import maybe_create_dir
 from model_estimators import segmentation_model_fn
-from models_front_end import *
-from models_segmentation import *
+from model_encoders import *
+from model_segmentation import *
 from palette_conversion import *
 
 seg_parser = ArgumentParser('semantic Segmentation')
+
 # IO
-seg_parser.add_argument('--dataset', type=str, default='VOC')
-seg_parser.add_argument('--model_dir', type=str, default=summary_home)
-seg_parser.add_argument('--inference_root', type=str)
+seg_parser.add_argument('--dataset', type=str, default='VOC',
+                        help='Dataset name. It in turn defines image paths, label paths, palette and so on Refer to `config.py` for further information.')
+# seg_parser.add_argument('--model_dir', type=str, default=summary_home,
+#                         help='Used to store model. It defaults to `summary_home` defined in `config.py`.')
+seg_parser.add_argument('--mode', type=str, default='t', choices=['t', 'e', 'p', 'o'],
+                        help='It refers to "train, evaluate, prediction, observe" respectively. `observe` mode is used to help inspect the training dataset.')
+seg_parser.add_argument('--inference_root', type=str,
+                        help='Only used in non-training mode. A directory used to store prediction results. If not provided, `model_dir` will be used instead.')
 seg_parser.add_argument('--eval_dir', help='If this argument is provided, this will override the dir inferred from '
                                            'model name and training config information such as `batch_size`, '
-                                           '`front_end` and so on.')
-seg_parser.add_argument('--infer_eval_dir', action='store_true', help='Infer model components from `eval_dir`.')
+                                           '`encoder` and so on.')
+seg_parser.add_argument('--infer_eval_dir', action='store_true',
+                        help='Only valid in non-training mode and for models trained in this project, used to infer model hyper-parameters from the `eval_dir` name.')
 
-seg_parser.add_argument('--front_end', type=str)
-seg_parser.add_argument('--model', type=str)
+seg_parser.add_argument('--encoder', type=str,
+                        help='Specify the encoder of the model. Refer to `encoder_dict` defined below to choose valid encoder.')
+seg_parser.add_argument('--decoder', type=str,
+                        help='Specify the decoder of the model. Refer to `decoder_dict` defined below to choose valid encoder.')
 seg_parser.add_argument('--init_model_path', type=str,
                         help='Used to fine-tune a trained task-specific model. for example: fine-tune a segmentation '
                              'model already trained on VOC. Note: leave this argument empty if your\'re going to '
                              'initialize your model from ImageNet pretrained model')
-seg_parser.add_argument('--mode', type=str, default='t', choices=['t', 'e', 'p', 'o'],
-                        help='train, evaluate, prediction, observe')
 
-seg_parser.add_argument('--datalist_train', default='train.txt')
-seg_parser.add_argument('--datalist_val', default='val.txt')
+seg_parser.add_argument('--datalist_train', default='train.txt',
+                        help='A txt file located in `datalist_home`, used to specify image ids (file BASEname) for training.')
+seg_parser.add_argument('--datalist_val', default='val.txt',
+                        help='A txt file located in `datalist_home`, used to specify image ids (file BASEname) for validation.')
 # Model
-seg_parser.add_argument('--num_classes', type=int, default=21)
-seg_parser.add_argument('--ignore_label', type=int, default=255)
-seg_parser.add_argument('--crop_size', type=str, default='513')
-seg_parser.add_argument('--get_FCN', type=int, default=1)
-seg_parser.add_argument('--structure_mode', default='seg', choices=['seg', 'siamese', 'sup'])
+seg_parser.add_argument('--num_classes', type=int, default=21,
+                        help='Number of classes in the provided dataset. Actually, it can be inferred from palette defined in `config.py` if not specified.')
+seg_parser.add_argument('--ignore_label', type=int, default=255,
+                        help='Labels ignored when the loss is being calculated. This must be defined as a value different from valid class label, as it will be used in data augmentation step.')
+seg_parser.add_argument('--crop_size', type=str, default='513',
+                        help='The size of patch to be cropped in data augmentation step. "513" and "513,500" are two valid formats.')
+seg_parser.add_argument('--get_FCN', type=int, default=1,
+                        help='If set to False, FCN will not be desired and the top level of the encoders will be set as fully connected layers or global pooling layers.')
+seg_parser.add_argument('--structure_mode', default='seg', choices=['seg', 'siamese', 'sup'],
+                        help='seg=semantic_segmentation. sup=superimpose. The latter two are used for change detection tasks.')
 
 # Learning control
 seg_parser.add_argument('--learning_rate', type=float, default=1e-4)
-seg_parser.add_argument('--power', type=float, default=0.9)
-seg_parser.add_argument('--end_learning_rate', type=float, default=1e-6)
+seg_parser.add_argument('--power', type=float, default=0.9, help='Used for polynomial learning policy control.')
+seg_parser.add_argument('--end_learning_rate', type=float, default=1e-6,
+                        help='Used for polynomial learning policy control.')
 seg_parser.add_argument('--momentum', type=float, default=0.9)
-seg_parser.add_argument('--lr_decay', type=str, default='poly')
-seg_parser.add_argument('--decay_step', type=int, default=None)
+seg_parser.add_argument('--lr_decay', type=str, default='poly', choices=['poly', 'stable'])
+seg_parser.add_argument('--decay_step', type=int, default=None,
+                        help='After `decay_step`, learning rate will drop to `end_learning_rate`.')
 seg_parser.add_argument('--weight_decay', type=float, default=2e-4)
-seg_parser.add_argument('--bn_scale', action='store_true')
-seg_parser.add_argument('--frozen', action='store_true')
+seg_parser.add_argument('--bn_scale', action='store_true',
+                        help='Set `gamma` in BN layers frozen if `bn_scale`=False. In most cases, False get a better result.')
+seg_parser.add_argument('--frozen', action='store_true', help='freeze BN layers or not.')
 
 seg_parser.add_argument('--epochs', type=int, default=30)
 seg_parser.add_argument('--batch_size', type=int, default=8)
-seg_parser.add_argument('--devices', type=str, default='0')
-seg_parser.add_argument('--eval_interval', type=int, default=1000)
+seg_parser.add_argument('--devices', type=str, default='0', help='Specify which GPU to use.')
+seg_parser.add_argument('--eval_interval', type=int, default=1000,
+                        help='Evaluate the model using validation dataset every `eval_interval` seconds.')
 
-seg_parser.add_argument('--extra', type=str, default='')
+seg_parser.add_argument('--extra', type=str, default='',
+                        help='Other comments on this training process. This will be append to the end of `model_dir`.')
 
 args = seg_parser.parse_args()
 
@@ -65,6 +84,7 @@ os.environ['CUDA_VISIBLE_DEVICES'] = args.devices
 
 dataset = args.dataset
 
+# `image_home`, `label_home` and so on are defined based on `dataset` given above.
 if dataset not in data_home_bundle:
     raise Exception('unregistered dataset name.')
 else:
@@ -90,12 +110,14 @@ learning_rate = args.learning_rate
 end_learning_rate = args.end_learning_rate
 batch_size = args.batch_size
 
+# `step` is necessary but not defined and is hard to defined due to the different number of images of different dataset. `step` will be inferred from your dataset and `batch_size.
 max_steps = int(math.ceil(nr_train / batch_size)) * epochs
 if args.decay_step is None:
     decay_step = max_steps
 else:
     decay_step = args.decay_step
 
+# Parse `crop_size`.
 crop_size = args.crop_size
 if ',' in crop_size:
     crop_size_height, crop_size_width = map(int, crop_size.split(','))
@@ -104,13 +126,14 @@ else:
 
 ignore_label = args.ignore_label
 
-front_end = args.front_end
-model = args.model
-model_name = f'{front_end}_{model}'
+encoder = args.encoder
+decoder = args.decoder
+model_name = f'{encoder}_{decoder}'
 init_model_path = args.init_model_path
 structure_mode = args.structure_mode
 
-# Set up `model dir`. 'eval_dir' will override the inferred model dir.
+# Set up `model dir`.
+# If'eval_dir' is provided and `infer_eval_dir` is set to true, it will override the inferred model dir.
 eval_dir = args.eval_dir
 if eval_dir:
     if not os.path.exists(eval_dir):
@@ -119,7 +142,7 @@ if eval_dir:
     if args.infer_eval_dir:
         logger.info('Inferring models from eval_dir...')
         session_name = os.path.basename(eval_dir)
-        front_end, model = session_name.split('#')[0].split('_')
+        encoder, decoder = session_name.split('#')[0].split('_')
 
     if eval_dir.startswith('@'):
         model_dir = join(summary_home, eval_dir[1:])
@@ -129,30 +152,49 @@ else:
     session_name = f'{model_name}#{dataset}#{args.datalist_train.split(".")[0]}#{epochs}#{batch_size}#{learning_rate}#{end_learning_rate}#{max_steps}#{crop_size}#{args.bn_scale}#{ignore_label}#{structure_mode}#{args.extra}'
     model_dir = join(summary_home, dataset, session_name)
 
-# Output basic info to the model dir.
 maybe_create_dir(model_dir)
 
-# Parse the front_end.
-if 'SRes' in front_end:
-    parse_res = re.search(r'(S?Res)(\d+)@(\d+)', front_end)
+# Parse the encoder.
+if 'SRes' in encoder:
+    parse_res = re.search(r'(S?Res)(\d+)@(\d+)', encoder)
     res_name = parse_res.group(1)
     res_depth = int(parse_res.group(2))
     res_stride = int(parse_res.group(3))
-    front_end = res_name
-elif 'SVGG' in front_end:
-    parse_vgg = re.search(r'(S?VGG)(\d+)', front_end)
+    encoder = res_name
+elif 'SVGG' in encoder:
+    parse_vgg = re.search(r'(S?VGG)(\d+)', encoder)
     vgg_name = parse_vgg.group(1)
     vgg_depth = int(parse_vgg.group(2))
-    front_end = vgg_name
+    encoder = vgg_name
 
 # Parse the decoder.
-if model.startswith('SimpleDeconv'):
-    fuse = sorted(map(int, model[12:]))
-    model = model[:12]
-else:
-    fuse = []
+if decoder.startswith('SimpleDeconv'):
+    if decoder == 'SimpleDeconv':
+        fuse = []
 
-front_end_dict = {
+    else:
+        fuse = sorted(map(int, decoder[12:]))
+        decoder = decoder[:12]
+
+elif decoder.startswith('Deeplabv3'):
+    # Parse the rates of the ASPP module.
+    if '@' not in decoder:
+        ASPP_rates = (6, 12, 18)
+    elif '@' in decoder:
+        decoder, ASPP_rates = decoder.split('@')
+        ASPP_rates = map(int, ASPP_rates.split('x'))
+        ASPP_rates = tuple(ASPP_rates)
+    else:
+        raise Exception('The provided Deeplabv3 format is not valid.')
+
+    # Determine if it's "Deeplabv3 plus" or "Deeplab v3".
+    if decoder == 'Deeplabv3p':
+        plus = True
+        decoder = 'Deeplabv3'
+    else:
+        plus = False
+
+encoder_dict = {
     'VGG16': VGG16,
     'Res50': ResNet50,
     'SRes': lambda X_input, image_height, image_width, get_FCN, is_training: \
@@ -167,17 +209,16 @@ front_end_dict = {
 }
 
 decoder_dict = {
-    'FCN32s': lambda front_end, num_classes, is_training: FCN(front_end, 32, num_classes, is_training),
-    'FCN16s': lambda front_end, num_classes, is_training: FCN(front_end, 16, num_classes, is_training),
-    'FCN8s': lambda front_end, num_classes, is_training: FCN(front_end, 8, num_classes, is_training),
+    'FCN32s': lambda encoder, num_classes, is_training: FCN(encoder, 32, num_classes, is_training),
+    'FCN16s': lambda encoder, num_classes, is_training: FCN(encoder, 16, num_classes, is_training),
+    'FCN8s': lambda encoder, num_classes, is_training: FCN(encoder, 8, num_classes, is_training),
     'PSPNet': PSPNet,
     'UNet': UNet,
     'Deeplabv2': Deeplabv2,
-    'Deeplabv3': lambda front_end, num_class, is_training: Deeplabv3(front_end, num_class, is_training, args.bn_scale),
-    'Deeplabv3p': lambda front_end, num_class, is_training: Deeplabv3p(front_end, num_class, is_training,
-                                                                       args.bn_scale),
-    'SimpleDeconv': lambda front_end, num_class, is_training: SimpleDeconv(front_end, num_class, is_training,
-                                                                           args.bn_scale, fuse),
+    'Deeplabv3': lambda encoder, num_class, is_training: Deeplabv3(encoder, num_class, is_training, args.bn_scale,
+                                                                   plus=plus, ASPP_rates=ASPP_rates),
+    'SimpleDeconv': lambda encoder, num_class, is_training: SimpleDeconv(encoder, num_class, is_training,
+                                                                         args.bn_scale, fuse),
 }
 
 with open(join(model_dir, 'parameters.txt'), 'w', encoding='utf8') as f:
@@ -193,10 +234,10 @@ seg_model = tf.estimator.Estimator(
     model_dir=model_dir,
     config=run_config,
     params={
-        'front_end': front_end_dict[front_end],
+        'encoder': encoder_dict[encoder],
         'image_height': crop_size_height,
         'image_width': crop_size_width,
-        'model': decoder_dict[model],
+        'decoder': decoder_dict[decoder],
         'init_model_path': args.init_model_path,
         # 'num_classes': args.num_classes,
         'num_classes': len(palette),

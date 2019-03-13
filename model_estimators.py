@@ -1,4 +1,4 @@
-from models_front_end import *
+from model_encoders import *
 
 
 def segmentation_model_fn(features, labels, mode, params):
@@ -13,20 +13,20 @@ def segmentation_model_fn(features, labels, mode, params):
         else:
             feature = features
 
-        front_end = params['front_end'](feature, params['image_height'], params['image_width'], get_FCN=1,
-                                        is_training=is_training)
-        model = params['model'](front_end, params['num_classes'], is_training=is_training)
+        encoder = params['encoder'](feature, params['image_height'], params['image_width'], get_FCN=1,
+                                    is_training=is_training)
+        model = params['decoder'](encoder, params['num_classes'], is_training=is_training)
         logits = model.logits
 
     elif params['structure_mode'] == 'siamese':
         with tf.variable_scope('') as scope:
-            front_end1 = params['front_end'](features[0], params['image_height'], params['image_width'], get_FCN=1,
-                                             is_training=is_training)
-            model_1 = params['model'](front_end1, params['num_classes'], is_training=is_training)
+            encoder1 = params['encoder'](features[0], params['image_height'], params['image_width'], get_FCN=1,
+                                         is_training=is_training)
+            model_1 = params['decoder'](encoder1, params['num_classes'], is_training=is_training)
             scope.reuse_variables()
-            front_end2 = params['front_end'](features[1], params['image_height'], params['image_width'], get_FCN=1,
-                                             is_training=is_training)
-            model_2 = params['model'](front_end2, params['num_classes'], is_training=is_training)
+            encoder2 = params['encoder'](features[1], params['image_height'], params['image_width'], get_FCN=1,
+                                         is_training=is_training)
+            model_2 = params['decoder'](encoder2, params['num_classes'], is_training=is_training)
 
             logits = tf.abs(model_1.logits - model_2.logits)
 

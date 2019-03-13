@@ -116,7 +116,7 @@ CV_dataset_home = join(dataset_home, 'CV')
 
 semantic_segmentation_home = join(CV_dataset_home, 'semantic_segmentation')
 VOC_home = join(semantic_segmentation_home, 'VOC2012')
-Vinhingen_home = join(semantic_segmentation_home, 'Vinhingen')
+Vaihingen_home = join(semantic_segmentation_home, 'Vaihingen')
 fujian_home = join(semantic_segmentation_home, 'fujian20180924')
 
 change_detection_home = join(CV_dataset_home, 'change_detection')
@@ -136,10 +136,11 @@ vgg19_ckpt_path = None
 
 data_home_bundle = {
     'VOC': [VOC_home, 'images', 'labels', 'datalist', VOC_palette],
-    'Vinhingen': [Vinhingen_home, 'images', 'labels', 'datalist', Vinhingen_palette],
+    'Vaihingen': [Vaihingen_home, 'images', 'labels', 'datalist', Vinhingen_palette],
     'fujian': [fujian_home, 'images', 'labels', 'datalist', fujian_palette],
     'TSUNAMI': [TSUNAMI_home, 'images', 'labels', 'datalist', TSUNAMI_palette],
     'GSV': [GSV_home, 'images', 'labels', 'datalist', TSUNAMI_palette],
 }
 
 # ========================= Only need to change the wrapped around code snippet ====================
+
